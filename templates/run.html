@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  {{REFRESH}}
+  <title>{{TITLE}} · Run · Anvil</title>
+  <style>{{CSS}}</style>
+</head>
+<body class="page-console">
+{{TOPBAR}}
+<main class="console">
+  <a class="back-link" href="/">&larr; Console</a>
+  <div class="run__head">
+    <div>
+      <h1 class="run__title">{{TITLE}} {{STATUS}}</h1>
+      <div class="run__id muted">{{RUN_ID}}</div>
+      <div class="run__meta">{{META}}</div>
+    </div>
+  </div>
+  <section class="card">
+    <div class="card__head"><h3>Log</h3></div>
+    <pre class="log">{{LOG}}</pre>
+  </section>
+</main>
+</body>
+</html>

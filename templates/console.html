@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Anvil · HOLDFAST CI</title>
+  <style>{{CSS}}</style>
+</head>
+<body class="page-console">
+{{TOPBAR}}
+<main class="console">
+  <div class="console__head">
+    <div>
+      <h1>Build console</h1>
+      <p class="sub">Clone a repo and run declared shell steps on owned metal.</p>
+    </div>
+  </div>
+
+  <div class="grid">
+    <section class="col">
+      <h2 class="section-title">Pipelines</h2>
+      <div class="pipeline-list">
+        {{PIPELINES}}
+      </div>
+
+      <section class="card card--form">
+        <div class="card__head"><h3>New pipeline</h3></div>
+        <div class="card__body">
+          <form class="editor" method="post" action="/api/pipelines">
+            <input type="hidden" name="csrf_token" value="{{CSRF}}">
+            <div class="field">
+              <label for="name">Name</label>
+              <input type="text" id="name" name="name" required maxlength="200" placeholder="e.g. build-and-test">
+            </div>
+            <div class="field">
+              <label for="repo_url">Repository URL</label>
+              <input type="text" id="repo_url" name="repo_url" required placeholder="https://git.w33d.xyz/owner/name.git">
+            </div>
+            <div class="field">
+              <label for="branch">Branch <span class="muted">(default: main)</span></label>
+              <input type="text" id="branch" name="branch" placeholder="main">
+            </div>
+            <div class="field">
+              <label for="steps">Steps <span class="muted">(one shell command per line)</span></label>
+              <textarea id="steps" name="steps" class="editor__body" placeholder="cargo build --release&#10;cargo test"></textarea>
+            </div>
+            <div class="editor__actions">
+              <button class="btn btn-primary" type="submit">Create pipeline</button>
+            </div>
+          </form>
+        </div>
+      </section>
+    </section>
+
+    <section class="col">
+      <h2 class="section-title">Recent runs</h2>
+      <div class="card">
+        <table class="runs">
+          <thead>
+            <tr><th>Status</th><th>Pipeline</th><th>Started</th><th>Duration</th></tr>
+          </thead>
+          <tbody>
+            {{RUNS}}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+</main>
+</body>
+</html>
