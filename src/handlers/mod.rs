@@ -4,8 +4,9 @@
 //! SSO-gated create-pipeline / trigger-run / view-run flow.
 //!
 //! The shared design tokens / CSS are embedded (via `include_str!`) and inlined into every page,
-//! matching the HOLDFAST enterprise brand (the same dark command-center look as the rest of the
-//! estate): brand shield, dark gradient app-bar, indigo accent, status pills.
+//! matching the HOLDFAST estate brand on the shared Okta Odyssey UI kit: brand shield, a clean
+//! flat app-bar (brand + "All apps" link + user chip + logout), the Odyssey primary accent, and
+//! soft-tinted status pills.
 
 pub mod health;
 pub mod pipelines;
@@ -31,9 +32,25 @@ pub fn esc(s: &str) -> String {
         .replace('\'', "&#x27;")
 }
 
-/// Render the shared app-bar: shield + HOLDFAST wordmark + page title on the left; the signed-in
-/// email + a Logout link to the gateway on the right.
+/// Render the shared app-bar: shield + HOLDFAST wordmark + service tag on the left; the page title,
+/// an "All apps" link back to the apex portal, the signed-in user chip (avatar initial + email), and
+/// a Logout link to the gateway on the right. A neutral `—` email (unauthenticated/public pages)
+/// renders the All-apps link but no user chip.
 pub fn topbar(page_title: &str, email: &str) -> String {
+    let chip = if email.is_empty() || email == "—" {
+        String::new()
+    } else {
+        let initial = email
+            .chars()
+            .next()
+            .map(|c| c.to_uppercase().to_string())
+            .unwrap_or_else(|| "H".to_string());
+        format!(
+            r#"<span class="userchip"><span class="userchip__avatar" aria-hidden="true">{initial}</span><span class="user-email">{email}</span></span>"#,
+            initial = esc(&initial),
+            email = esc(email),
+        )
+    };
     format!(
         r#"<header class="topbar">
   <div class="topbar__inner">
@@ -44,14 +61,15 @@ pub fn topbar(page_title: &str, email: &str) -> String {
     </a>
     <div class="topbar__right">
       <span class="topbar__title">{title}</span>
-      <span class="user-email">{email}</span>
+      <a class="allapps" href="https://w33d.xyz" title="All apps"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>All apps</a>
+      {chip}
       <a class="btn btn-ghost btn-sm" href="{logout}">Log out</a>
     </div>
   </div>
 </header>"#,
         shield = SHIELD_SVG,
         title = esc(page_title),
-        email = esc(email),
+        chip = chip,
         logout = LOGOUT_URL,
     )
 }
@@ -150,7 +168,7 @@ pub fn error_page(status: StatusCode, message: &str) -> String {
         r#"<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="dark">
+<meta name="color-scheme" content="light">
 <title>{code} {reason} · Anvil</title><style>{css}</style></head>
 <body class="page-console">
 {topbar}
