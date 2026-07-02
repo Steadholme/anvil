@@ -63,9 +63,13 @@ pub trait Store: Send + Sync {
     async fn get_pipeline(&self, id: &str) -> Option<Pipeline>;
     /// Insert a new pipeline. Errors with [`StoreError::Conflict`] if the id is taken.
     async fn create_pipeline(&self, p: &Pipeline) -> Result<(), StoreError>;
+    /// Replace an existing pipeline definition.
+    async fn update_pipeline(&self, p: &Pipeline) -> Result<(), StoreError>;
 
     /// Recent runs across all pipelines, newest-first, capped at `limit`.
     async fn list_recent_runs(&self, limit: usize) -> Vec<Run>;
+    /// Recent runs for one pipeline, newest-first, capped at `limit`.
+    async fn list_pipeline_runs(&self, pipeline_id: &str, limit: usize) -> Vec<Run>;
     /// One run by id.
     async fn get_run(&self, id: &str) -> Option<Run>;
     /// Insert a new run (status `queued`). Errors with [`StoreError::Conflict`] on a duplicate id.
@@ -106,7 +110,11 @@ impl Store for InMemoryStore {
     // inside), so a guard is never held across a yield point.
     async fn list_pipelines(&self) -> Vec<Pipeline> {
         let mut v: Vec<Pipeline> = self.pipelines.lock().expect("pipelines lock").clone();
-        v.sort_by(|a, b| b.created_at.cmp(&a.created_at).then_with(|| b.id.cmp(&a.id)));
+        v.sort_by(|a, b| {
+            b.created_at
+                .cmp(&a.created_at)
+                .then_with(|| b.id.cmp(&a.id))
+        });
         v
     }
 
@@ -128,9 +136,38 @@ impl Store for InMemoryStore {
         Ok(())
     }
 
+    async fn update_pipeline(&self, p: &Pipeline) -> Result<(), StoreError> {
+        let mut pipelines = self.pipelines.lock().expect("pipelines lock");
+        match pipelines.iter_mut().find(|x| x.id == p.id) {
+            Some(existing) => {
+                *existing = p.clone();
+                Ok(())
+            }
+            None => Err(StoreError::Backend(format!("no pipeline with id {}", p.id))),
+        }
+    }
+
     async fn list_recent_runs(&self, limit: usize) -> Vec<Run> {
         let mut v: Vec<Run> = self.runs.lock().expect("runs lock").clone();
         // Newest-first by start time, then id; queued runs (started_at == 0) sort to the top.
+        v.sort_by(|a, b| {
+            b.started_at
+                .cmp(&a.started_at)
+                .then_with(|| b.id.cmp(&a.id))
+        });
+        v.truncate(limit);
+        v
+    }
+
+    async fn list_pipeline_runs(&self, pipeline_id: &str, limit: usize) -> Vec<Run> {
+        let mut v: Vec<Run> = self
+            .runs
+            .lock()
+            .expect("runs lock")
+            .iter()
+            .filter(|r| r.pipeline_id == pipeline_id)
+            .cloned()
+            .collect();
         v.sort_by(|a, b| {
             b.started_at
                 .cmp(&a.started_at)
@@ -329,6 +366,22 @@ impl PgStore {
         rows.iter().map(Self::run_from_row).collect()
     }
 
+    async fn list_pipeline_runs_async(
+        &self,
+        pipeline_id: &str,
+        limit: usize,
+    ) -> Result<Vec<Run>, sqlx::Error> {
+        let rows = sqlx::query(
+            "SELECT id, pipeline_id, status, started_at, finished_at, exit_code, log \
+             FROM runs WHERE pipeline_id = $1 ORDER BY started_at DESC, id DESC LIMIT $2",
+        )
+        .bind(pipeline_id)
+        .bind(limit as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(Self::run_from_row).collect()
+    }
+
     async fn get_run_async(&self, id: &str) -> Result<Option<Run>, sqlx::Error> {
         let row = sqlx::query(
             "SELECT id, pipeline_id, status, started_at, finished_at, exit_code, log \
@@ -367,7 +420,7 @@ impl Store for PgStore {
 
     async fn create_pipeline(&self, p: &Pipeline) -> Result<(), StoreError> {
         let _guard = self.write_lock.lock().await;
-        sqlx::query(
+        let result = sqlx::query(
             "INSERT INTO pipelines (id, name, repo_url, branch, steps, created_at) \
              VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (id) DO NOTHING",
         )
@@ -386,14 +439,48 @@ impl Store for PgStore {
                 StoreError::Backend(e.to_string())
             }
         })?;
+        if result.rows_affected() == 0 {
+            return Err(StoreError::Conflict(p.id.clone()));
+        }
+        Ok(())
+    }
+
+    async fn update_pipeline(&self, p: &Pipeline) -> Result<(), StoreError> {
+        let _guard = self.write_lock.lock().await;
+        let result = sqlx::query(
+            "UPDATE pipelines SET name = $1, repo_url = $2, branch = $3, steps = $4 \
+             WHERE id = $5",
+        )
+        .bind(&p.name)
+        .bind(&p.repo_url)
+        .bind(&p.branch)
+        .bind(&p.steps)
+        .bind(&p.id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| StoreError::Backend(e.to_string()))?;
+        if result.rows_affected() == 0 {
+            return Err(StoreError::Backend(format!("no pipeline with id {}", p.id)));
+        }
         Ok(())
     }
 
     async fn list_recent_runs(&self, limit: usize) -> Vec<Run> {
-        self.list_recent_runs_async(limit).await.unwrap_or_else(|e| {
-            tracing::error!(error = %e, "pg list_recent_runs failed");
-            Vec::new()
-        })
+        self.list_recent_runs_async(limit)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::error!(error = %e, "pg list_recent_runs failed");
+                Vec::new()
+            })
+    }
+
+    async fn list_pipeline_runs(&self, pipeline_id: &str, limit: usize) -> Vec<Run> {
+        self.list_pipeline_runs_async(pipeline_id, limit)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::error!(error = %e, "pg list_pipeline_runs failed");
+                Vec::new()
+            })
     }
 
     async fn get_run(&self, id: &str) -> Option<Run> {
@@ -405,7 +492,7 @@ impl Store for PgStore {
 
     async fn create_run(&self, r: &Run) -> Result<(), StoreError> {
         let _guard = self.write_lock.lock().await;
-        sqlx::query(
+        let result = sqlx::query(
             "INSERT INTO runs (id, pipeline_id, status, started_at, finished_at, exit_code, log) \
              VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (id) DO NOTHING",
         )
@@ -419,6 +506,9 @@ impl Store for PgStore {
         .execute(&self.pool)
         .await
         .map_err(|e| StoreError::Backend(e.to_string()))?;
+        if result.rows_affected() == 0 {
+            return Err(StoreError::Conflict(r.id.clone()));
+        }
         Ok(())
     }
 
@@ -452,16 +542,14 @@ impl Store for PgStore {
         finished_at: i64,
     ) -> Result<(), StoreError> {
         let _guard = self.write_lock.lock().await;
-        sqlx::query(
-            "UPDATE runs SET status = $1, exit_code = $2, finished_at = $3 WHERE id = $4",
-        )
-        .bind(status)
-        .bind(exit_code)
-        .bind(finished_at)
-        .bind(id)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| StoreError::Backend(e.to_string()))?;
+        sqlx::query("UPDATE runs SET status = $1, exit_code = $2, finished_at = $3 WHERE id = $4")
+            .bind(status)
+            .bind(exit_code)
+            .bind(finished_at)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
         Ok(())
     }
 }

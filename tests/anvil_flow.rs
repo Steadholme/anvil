@@ -8,9 +8,9 @@
 
 use std::time::Duration;
 
+use anvil::{app, build_dev_state, AppState};
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
-use anvil::{app, build_dev_state, AppState};
 use tower::ServiceExt;
 
 const CSRF: &str = "tok_csrf_for_tests";
@@ -26,7 +26,10 @@ async fn full_ci_flow_in_memory() {
     // --- empty console -----------------------------------------------------
     let (status, body) = call(&state, get("/")).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(body.contains("No pipelines yet"), "empty pipelines placeholder");
+    assert!(
+        body.contains("No pipelines yet"),
+        "empty pipelines placeholder"
+    );
     assert!(body.contains("No runs yet."), "empty runs placeholder");
 
     // --- GET / sets a CSRF cookie ------------------------------------------
@@ -36,16 +39,31 @@ async fn full_ci_flow_in_memory() {
         .get(header::SET_COOKIE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    assert!(set_cookie.contains("__Host-csrf="), "GET / mints CSRF cookie");
+    assert!(
+        set_cookie.contains("__Host-csrf="),
+        "GET / mints CSRF cookie"
+    );
 
     // --- POST /api/pipelines without identity -> 401 -----------------------
-    let body = form(&[("name", "x"), ("repo_url", "https://h/r.git"), ("csrf_token", CSRF)]);
+    let body = form(&[
+        ("name", "x"),
+        ("repo_url", "https://h/r.git"),
+        ("csrf_token", CSRF),
+    ]);
     let (status, _) = call(&state, post_csrf("/api/pipelines", &body, None)).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "no X-Auth -> 401");
 
     // --- POST /api/pipelines with bad CSRF -> 401 --------------------------
-    let body = form(&[("name", "x"), ("repo_url", "https://h/r.git"), ("csrf_token", "WRONG")]);
-    let (status, _) = call(&state, post_csrf("/api/pipelines", &body, Some(("u_op", "op@hf")))).await;
+    let body = form(&[
+        ("name", "x"),
+        ("repo_url", "https://h/r.git"),
+        ("csrf_token", "WRONG"),
+    ]);
+    let (status, _) = call(
+        &state,
+        post_csrf("/api/pipelines", &body, Some(("u_op", "op@hf"))),
+    )
+    .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "CSRF mismatch -> 401");
 
     // --- non-http repo URL rejected ----------------------------------------
@@ -54,7 +72,11 @@ async fn full_ci_flow_in_memory() {
         ("repo_url", "file:///etc/passwd"),
         ("csrf_token", CSRF),
     ]);
-    let (status, _) = call(&state, post_csrf("/api/pipelines", &body, Some(("u_op", "op@hf")))).await;
+    let (status, _) = call(
+        &state,
+        post_csrf("/api/pipelines", &body, Some(("u_op", "op@hf"))),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "file:// repo URL rejected");
 
     // --- create a real pipeline --------------------------------------------
@@ -79,6 +101,60 @@ async fn full_ci_flow_in_memory() {
 
     // Recover the pipeline id from its Run form action on the console.
     let pid = extract_pipeline_id(&body).expect("pipeline id in console");
+
+    // --- pipeline detail + badge before any run -------------------------------
+    let (status, body) = call(&state, get(&format!("/pipeline/{pid}"))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains("Status badge"),
+        "detail renders badge section"
+    );
+    assert!(body.contains("echo hello"), "detail renders legacy steps");
+
+    let (status, body) = call(&state, get(&format!("/badge/{pid}/status.svg"))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains(">never<"),
+        "badge shows never before first run"
+    );
+
+    // --- edit the pipeline to YAML-style steps --------------------------------
+    let (status, body) = call(&state, get(&format!("/pipeline/{pid}/edit"))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("Edit pipeline"), "edit page rendered");
+    assert!(body.contains(&format!(r#"action="/api/pipelines/{pid}""#)));
+
+    let yaml_steps = "steps:\n  - name: Build\n    run: cargo build --release\n  - name: Test\n    run: |\n      cargo test\n      cargo clippy";
+    let body = form(&[
+        ("name", "build-and-test-updated"),
+        ("repo_url", "http://127.0.0.1:1/nope.git"),
+        ("branch", "main"),
+        ("steps", yaml_steps),
+        ("csrf_token", CSRF),
+    ]);
+    let resp = app(state.clone())
+        .oneshot(post_csrf(
+            &format!("/api/pipelines/{pid}"),
+            &body,
+            Some(("u_op", "op@hf")),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        location(&resp),
+        format!("/pipeline/{pid}"),
+        "update redirects to detail"
+    );
+
+    let (status, body) = call(&state, get(&format!("/pipeline/{pid}"))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains("build-and-test-updated"),
+        "updated name rendered"
+    );
+    assert!(body.contains("Build"), "YAML step name rendered");
+    assert!(body.contains("cargo clippy"), "YAML block run rendered");
 
     // --- trigger a run -----------------------------------------------------
     let trigger = form(&[("csrf_token", CSRF)]);
@@ -110,18 +186,45 @@ async fn full_ci_flow_in_memory() {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert!(terminal, "run should fail fast when the clone target refuses");
+    assert!(
+        terminal,
+        "run should fail fast when the clone target refuses"
+    );
+
+    let (status, body) = call(&state, get(&format!("/badge/{pid}/status.svg"))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(
+        body.contains(">failed<"),
+        "badge shows failed after terminal run"
+    );
 
     // --- triggering a run for an unknown pipeline -> 404 -------------------
     let (status, _) = call(
         &state,
-        post_csrf("/api/pipelines/pl_missing/run", &trigger, Some(("u_op", "op@hf"))),
+        post_csrf(
+            "/api/pipelines/pl_missing/run",
+            &trigger,
+            Some(("u_op", "op@hf")),
+        ),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 
     // --- unknown run id -> 404 ---------------------------------------------
     let (status, _) = call(&state, get("/run/run_missing")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // --- updating an unknown pipeline -> 404 --------------------------------
+    let body = form(&[
+        ("name", "missing"),
+        ("repo_url", "https://h/r.git"),
+        ("csrf_token", CSRF),
+    ]);
+    let (status, _) = call(
+        &state,
+        post_csrf("/api/pipelines/pl_missing", &body, Some(("u_op", "op@hf"))),
+    )
+    .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
@@ -132,7 +235,9 @@ async fn full_ci_flow_in_memory() {
 async fn call(state: &AppState, req: Request<Body>) -> (StatusCode, String) {
     let resp = app(state.clone()).oneshot(req).await.unwrap();
     let status = resp.status();
-    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
     (status, String::from_utf8_lossy(&bytes).to_string())
 }
 
@@ -156,7 +261,9 @@ fn post_csrf(uri: &str, body: &str, ident: Option<(&str, &str)>) -> Request<Body
         .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
         .header(header::COOKIE, format!("__Host-csrf={CSRF}"));
     if let Some((sub, email)) = ident {
-        b = b.header("x-auth-subject", sub).header("x-auth-email", email);
+        b = b
+            .header("x-auth-subject", sub)
+            .header("x-auth-email", email);
     }
     b.body(Body::from(body.to_string())).unwrap()
 }
@@ -174,7 +281,9 @@ fn enc(s: &str) -> String {
     let mut o = String::new();
     for b in s.bytes() {
         match b {
-            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => o.push(b as char),
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                o.push(b as char)
+            }
             b' ' => o.push('+'),
             _ => o.push_str(&format!("%{b:02X}")),
         }

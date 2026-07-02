@@ -42,8 +42,8 @@
               <input type="text" id="branch" name="branch" placeholder="main">
             </div>
             <div class="field">
-              <label for="steps">Steps <span class="muted">(one shell command per line)</span></label>
-              <textarea id="steps" name="steps" class="editor__body" placeholder="cargo build --release&#10;cargo test"></textarea>
+              <label for="steps">Pipeline YAML</label>
+              <textarea id="steps" name="steps" class="editor__body" placeholder="steps:&#10;  - name: Build&#10;    run: cargo build --release&#10;  - name: Test&#10;    run: cargo test"></textarea>
             </div>
             <div class="editor__actions">
               <button class="btn btn-primary" type="submit">Create pipeline</button>

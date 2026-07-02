@@ -37,6 +37,13 @@ const TIMEOUT_EXIT_CODE: i64 = 124;
 /// Exit code stamped when a subprocess could not be spawned at all.
 const SPAWN_EXIT_CODE: i64 = 127;
 
+/// One runnable step from a pipeline definition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PipelineStep {
+    pub name: String,
+    pub run: String,
+}
+
 /// Clones the [`Store`], audit sink, and config knobs the scheduler needs; cheap to clone (all
 /// behind `Arc` / cloneable handles).
 #[derive(Clone)]
@@ -171,10 +178,14 @@ impl Runner {
         }
 
         // --- steps ----------------------------------------------------------
-        for (i, step) in steps_of(&pipeline.steps).into_iter().enumerate() {
-            self.append(run_id, &format!("\n$ {step}\n")).await;
+        for (i, step) in parse_steps(&pipeline.steps).into_iter().enumerate() {
+            self.append(
+                run_id,
+                &format!("\nanvil: step {} - {}\n$ {}\n", i + 1, step.name, step.run),
+            )
+            .await;
             let res = self
-                .run_command("sh", &["-c", &step], Some(workspace))
+                .run_command("sh", &["-c", &step.run], Some(workspace))
                 .await;
             self.append(run_id, &res.output).await;
             if res.code != 0 {
@@ -199,7 +210,10 @@ impl Runner {
         cmd.args(args);
         cmd.env_clear();
         // A deliberately minimal, predictable environment. No inherited secrets leak into a build.
-        cmd.env("PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
+        cmd.env(
+            "PATH",
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        );
         cmd.env("CI", "true");
         cmd.env("ANVIL", "true");
         if let Some(dir) = cwd {
@@ -262,15 +276,219 @@ struct CmdResult {
     output: String,
 }
 
-/// Split a pipeline's `steps` blob into individual, non-empty trimmed shell commands. Blank lines
-/// and `#` comment lines are skipped.
+/// Split a pipeline's definition into runnable steps, preserving compatibility with the original
+/// one-command-per-line format while supporting a small YAML steps subset:
+///
+/// ```text
+/// steps:
+///   - name: Build
+///     run: cargo build
+///   - name: Test
+///     run: |
+///       cargo test
+/// ```
+pub fn parse_steps(steps: &str) -> Vec<PipelineStep> {
+    if looks_like_yaml_steps(steps) {
+        return parse_yaml_steps(steps);
+    }
+    parse_legacy_steps(steps)
+}
+
+/// Return only the shell commands from [`parse_steps`].
 pub fn steps_of(steps: &str) -> Vec<String> {
-    steps
-        .lines()
-        .map(|l| l.trim())
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(|l| l.to_string())
-        .collect()
+    parse_steps(steps).into_iter().map(|s| s.run).collect()
+}
+
+fn parse_legacy_steps(steps: &str) -> Vec<PipelineStep> {
+    let mut out = Vec::new();
+    for line in steps.lines().map(str::trim) {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        out.push(PipelineStep {
+            name: format!("Step {}", out.len() + 1),
+            run: line.to_string(),
+        });
+    }
+    out
+}
+
+fn looks_like_yaml_steps(steps: &str) -> bool {
+    steps.lines().any(|line| {
+        let t = line.trim();
+        t == "steps:" || t.starts_with("- ")
+    })
+}
+
+fn parse_yaml_steps(steps: &str) -> Vec<PipelineStep> {
+    let lines: Vec<&str> = steps.lines().collect();
+    let mut out = Vec::new();
+    let mut name = String::new();
+    let mut run = String::new();
+    let mut open = false;
+    let mut i = 0;
+
+    while i < lines.len() {
+        let line = lines[i].trim_end_matches('\r');
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed == "steps:" {
+            i += 1;
+            continue;
+        }
+
+        let indent = indent_width(line);
+        if let Some(rest) = trimmed.strip_prefix("- ") {
+            flush_step(&mut out, &mut name, &mut run);
+            open = true;
+            if let Some(next) =
+                apply_yaml_step_field(rest, &lines, i, indent + 2, &mut name, &mut run)
+            {
+                i = next;
+            } else if !rest.trim().is_empty() {
+                run = trim_yaml_scalar(rest).to_string();
+                i += 1;
+            } else {
+                i += 1;
+            }
+            continue;
+        }
+
+        if open {
+            if let Some(next) =
+                apply_yaml_step_field(trimmed, &lines, i, indent, &mut name, &mut run)
+            {
+                i = next;
+            } else {
+                i += 1;
+            }
+        } else {
+            i += 1;
+        }
+    }
+
+    flush_step(&mut out, &mut name, &mut run);
+    out
+}
+
+fn apply_yaml_step_field(
+    text: &str,
+    lines: &[&str],
+    line_index: usize,
+    parent_indent: usize,
+    name: &mut String,
+    run: &mut String,
+) -> Option<usize> {
+    let (key, value) = split_yaml_key(text)?;
+    match key {
+        "name" => {
+            *name = trim_yaml_scalar(value).to_string();
+            Some(line_index + 1)
+        }
+        "run" => {
+            let value = value.trim();
+            if value == "|" || value == ">" {
+                let (block, next) = collect_block(lines, line_index + 1, parent_indent);
+                *run = block;
+                Some(next)
+            } else {
+                *run = trim_yaml_scalar(value).to_string();
+                Some(line_index + 1)
+            }
+        }
+        _ => None,
+    }
+}
+
+fn split_yaml_key(text: &str) -> Option<(&str, &str)> {
+    let (key, value) = text.split_once(':')?;
+    let key = key.trim();
+    if key == "name" || key == "run" {
+        Some((key, value.trim()))
+    } else {
+        None
+    }
+}
+
+fn trim_yaml_scalar(value: &str) -> &str {
+    let value = value.trim();
+    if value.len() >= 2 {
+        let bytes = value.as_bytes();
+        if (bytes[0] == b'"' && bytes[value.len() - 1] == b'"')
+            || (bytes[0] == b'\'' && bytes[value.len() - 1] == b'\'')
+        {
+            return &value[1..value.len() - 1];
+        }
+    }
+    value
+}
+
+fn collect_block(lines: &[&str], mut i: usize, parent_indent: usize) -> (String, usize) {
+    let start = i;
+    while i < lines.len() {
+        let line = lines[i].trim_end_matches('\r');
+        if !line.trim().is_empty() && indent_width(line) <= parent_indent {
+            break;
+        }
+        i += 1;
+    }
+
+    let block = &lines[start..i];
+    let base_indent = block
+        .iter()
+        .map(|l| l.trim_end_matches('\r'))
+        .filter(|l| !l.trim().is_empty())
+        .map(indent_width)
+        .min()
+        .unwrap_or(parent_indent + 2);
+
+    let mut out = String::new();
+    for line in block {
+        let line = line.trim_end_matches('\r');
+        if line.trim().is_empty() {
+            out.push('\n');
+        } else {
+            out.push_str(strip_indent(line, base_indent));
+            out.push('\n');
+        }
+    }
+    while out.ends_with('\n') {
+        out.pop();
+    }
+    (out, i)
+}
+
+fn indent_width(line: &str) -> usize {
+    line.chars().take_while(|c| *c == ' ').count()
+}
+
+fn strip_indent(line: &str, width: usize) -> &str {
+    let mut byte_idx = 0;
+    let mut seen = 0;
+    for (idx, ch) in line.char_indices() {
+        if seen >= width || ch != ' ' {
+            break;
+        }
+        seen += 1;
+        byte_idx = idx + ch.len_utf8();
+    }
+    &line[byte_idx..]
+}
+
+fn flush_step(out: &mut Vec<PipelineStep>, name: &mut String, run: &mut String) {
+    let command = run.trim().to_string();
+    if !command.is_empty() {
+        let label = if name.trim().is_empty() {
+            format!("Step {}", out.len() + 1)
+        } else {
+            name.trim().to_string()
+        };
+        out.push(PipelineStep {
+            name: label,
+            run: command,
+        });
+    }
+    name.clear();
+    run.clear();
 }
 
 /// Truncate a single log chunk to [`MAX_LOG_BYTES`] at a char boundary, appending a notice.
@@ -292,9 +510,41 @@ mod tests {
     #[test]
     fn steps_skip_blanks_and_comments() {
         let blob = "echo a\n\n  # a comment\n  echo b  \n";
-        assert_eq!(steps_of(blob), vec!["echo a".to_string(), "echo b".to_string()]);
+        assert_eq!(
+            steps_of(blob),
+            vec!["echo a".to_string(), "echo b".to_string()]
+        );
         assert!(steps_of("").is_empty());
         assert!(steps_of("\n\n# only comments\n").is_empty());
+    }
+
+    #[test]
+    fn yaml_steps_parse_named_and_block_runs() {
+        let blob = "\
+steps:
+  - name: Build
+    run: cargo build --release
+  - name: Test
+    run: |
+      cargo test
+      cargo clippy
+";
+        let steps = parse_steps(blob);
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[0].name, "Build");
+        assert_eq!(steps[0].run, "cargo build --release");
+        assert_eq!(steps[1].name, "Test");
+        assert_eq!(steps[1].run, "cargo test\ncargo clippy");
+    }
+
+    #[test]
+    fn yaml_steps_parse_dash_run_shorthand() {
+        let blob = "steps:\n  - run: echo quick\n  - cargo test\n";
+        let steps = parse_steps(blob);
+        assert_eq!(steps[0].name, "Step 1");
+        assert_eq!(steps[0].run, "echo quick");
+        assert_eq!(steps[1].name, "Step 2");
+        assert_eq!(steps[1].run, "cargo test");
     }
 
     #[test]

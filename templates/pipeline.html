@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>{{NAME}} · Pipeline · Anvil</title>
+  <style>{{CSS}}</style>
+</head>
+<body class="page-console">
+{{TOPBAR}}
+<main class="console">
+  <a class="back-link" href="/">&larr; Console</a>
+  <div class="pipeline-detail__head">
+    <div>
+      <h1 class="run__title">{{NAME}} {{LATEST_STATUS}}</h1>
+      <div class="run__id muted">{{ID}}</div>
+      <div class="run__meta"><code>{{REPO}}</code> <span class="branch">@ {{BRANCH}}</span> · Created {{CREATED}}</div>
+    </div>
+    <div class="pipeline-detail__actions">
+      <a class="btn btn-secondary" href="/pipeline/{{ID}}/edit">Edit</a>
+      <form class="inline-form" method="post" action="/api/pipelines/{{ID}}/run">
+        <input type="hidden" name="csrf_token" value="{{CSRF}}">
+        <button class="btn btn-primary" type="submit">Run</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="grid">
+    <section class="col">
+      <h2 class="section-title">Steps</h2>
+      <div class="step-list">
+        {{STEPS}}
+      </div>
+    </section>
+
+    <section class="col">
+      <h2 class="section-title">Definition</h2>
+      <section class="card">
+        <pre class="definition">{{DEFINITION}}</pre>
+      </section>
+
+      <section class="card">
+        <div class="card__head"><h3>Status badge</h3><img class="badge-preview" src="{{BADGE_URL}}" alt="Status badge"></div>
+        <div class="card__body">
+          <code>{{BADGE_SNIPPET}}</code>
+        </div>
+      </section>
+    </section>
+  </div>
+
+  <section class="card card--runs">
+    <div class="card__head"><h3>Runs</h3></div>
+    <table class="runs">
+      <thead>
+        <tr><th>Status</th><th>Run</th><th>Started</th><th>Duration</th><th>Exit</th></tr>
+      </thead>
+      <tbody>
+        {{RUNS}}
+      </tbody>
+    </table>
+  </section>
+</main>
+</body>
+</html>

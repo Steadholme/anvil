@@ -15,8 +15,12 @@
 //! Endpoints (Sluice forwards the path unmodified):
 //! - `GET  /healthz`                    liveness (container HEALTHCHECK, public)
 //! - `GET  /`                           console: pipelines + recent runs + create-pipeline form
+//! - `GET  /pipeline/{id}`               pipeline detail: definition + recent runs + badge link
+//! - `GET  /pipeline/{id}/edit`          edit an existing pipeline definition
 //! - `POST /api/pipelines`              create a pipeline (sso, CSRF)
+//! - `POST /api/pipelines/{id}`          update a pipeline (sso, CSRF)
 //! - `POST /api/pipelines/{id}/run`     enqueue a run (sso, CSRF)
+//! - `GET  /badge/{id}/status.svg`       SVG status badge for a pipeline
 //! - `GET  /run/{id}`                   the run page (live-ish log, status, duration)
 
 pub mod audit;
@@ -53,10 +57,14 @@ pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(handlers::health::healthz))
         .route("/", get(handlers::pipelines::index))
+        .route("/pipeline/{id}", get(handlers::pipelines::pipeline_page))
+        .route("/pipeline/{id}/edit", get(handlers::pipelines::edit_page))
         .route("/api/pipelines", post(handlers::pipelines::create))
+        .route("/api/pipelines/{id}", post(handlers::pipelines::update))
+        .route("/api/pipelines/{id}/run", post(handlers::pipelines::run))
         .route(
-            "/api/pipelines/{id}/run",
-            post(handlers::pipelines::run),
+            "/badge/{id}/status.svg",
+            get(handlers::pipelines::status_badge),
         )
         .route("/run/{id}", get(handlers::pipelines::run_page))
         .with_state(state)
@@ -83,7 +91,11 @@ pub fn build_dev_state() -> AppState {
         .join(format!("anvil-dev-{}", now_nanos()))
         .to_string_lossy()
         .into_owned();
-    assemble(config, Arc::new(InMemoryStore::new()), AuditSink::disabled())
+    assemble(
+        config,
+        Arc::new(InMemoryStore::new()),
+        AuditSink::disabled(),
+    )
 }
 
 /// Build runtime state from the environment.

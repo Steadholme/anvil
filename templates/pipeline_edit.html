@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Edit {{NAME}} · Anvil</title>
+  <style>{{CSS}}</style>
+</head>
+<body class="page-console">
+{{TOPBAR}}
+<main class="console">
+  <a class="back-link" href="/pipeline/{{ID}}">&larr; Pipeline</a>
+  <div class="console__head">
+    <div>
+      <h1>Edit pipeline</h1>
+      <p class="sub">{{NAME}}</p>
+    </div>
+  </div>
+
+  <section class="card card--form">
+    <div class="card__head"><h3>Definition</h3></div>
+    <div class="card__body">
+      <form class="editor" method="post" action="/api/pipelines/{{ID}}">
+        <input type="hidden" name="csrf_token" value="{{CSRF}}">
+        <div class="field">
+          <label for="name">Name</label>
+          <input type="text" id="name" name="name" required maxlength="200" value="{{NAME}}">
+        </div>
+        <div class="field">
+          <label for="repo_url">Repository URL</label>
+          <input type="text" id="repo_url" name="repo_url" required value="{{REPO}}">
+        </div>
+        <div class="field">
+          <label for="branch">Branch</label>
+          <input type="text" id="branch" name="branch" value="{{BRANCH}}">
+        </div>
+        <div class="field">
+          <label for="steps">Pipeline YAML</label>
+          <textarea id="steps" name="steps" class="editor__body">{{STEPS}}</textarea>
+        </div>
+        <div class="editor__actions">
+          <button class="btn btn-primary" type="submit">Save pipeline</button>
+          <a class="btn btn-secondary" href="/pipeline/{{ID}}">Cancel</a>
+        </div>
+      </form>
+    </div>
+  </section>
+</main>
+</body>
+</html>
