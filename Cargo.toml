@@ -14,6 +14,8 @@ name = "anvil"
 path = "src/main.rs"
 
 [dependencies]
+# Vendored Odyssey canonical CSS (font + tokens + shared components) for server-rendered pages.
+odyssey = { path = "crates/odyssey" }
 # HTTP framework (shared with keystone/inkwell/loom): Form/State/Path extractors, typed responses.
 axum = "0.8"
 # Async runtime axum runs on. `process` spawns `git clone` + the pipeline steps as async children

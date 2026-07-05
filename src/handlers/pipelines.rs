@@ -17,7 +17,7 @@ use crate::auth;
 use crate::config::{MAX_NAME_CHARS, RUN_LIST_LIMIT};
 use crate::error::AppError;
 use crate::handlers::{
-    esc, fmt_duration, fmt_ts, html_with_cookie, redirect, status_pill, topbar, APP_CSS,
+    app_css, esc, fmt_duration, fmt_ts, html_with_cookie, redirect, status_pill, topbar,
 };
 use crate::runner::{parse_steps, steps_of, STATUS_QUEUED};
 use crate::store::{Pipeline, Run};
@@ -66,7 +66,7 @@ pub async fn index(State(state): State<AppState>, headers: HeaderMap) -> Respons
     let runs_html = render_runs(&runs, &pipelines);
 
     let page = CONSOLE_HTML
-        .replace("{{CSS}}", APP_CSS)
+        .replace("{{CSS}}", app_css())
         .replace("{{TOPBAR}}", &topbar("Console", &email))
         .replace("{{CSRF}}", &esc(&csrf))
         .replace("{{PIPELINES}}", &pipelines_html)
@@ -129,7 +129,7 @@ pub async fn pipeline_page(
     let latest = runs.first().map(|r| r.status.as_str()).unwrap_or("never");
 
     let page = PIPELINE_HTML
-        .replace("{{CSS}}", APP_CSS)
+        .replace("{{CSS}}", app_css())
         .replace("{{TOPBAR}}", &topbar("Pipeline", &email))
         .replace("{{ID}}", &esc(&pipeline.id))
         .replace("{{NAME}}", &esc(&pipeline.name))
@@ -165,7 +165,7 @@ pub async fn edit_page(
         .ok_or_else(|| AppError::NotFound("no such pipeline".to_string()))?;
 
     let page = PIPELINE_EDIT_HTML
-        .replace("{{CSS}}", APP_CSS)
+        .replace("{{CSS}}", app_css())
         .replace("{{TOPBAR}}", &topbar("Edit pipeline", &email))
         .replace("{{ID}}", &esc(&pipeline.id))
         .replace("{{NAME}}", &esc(&pipeline.name))
@@ -327,7 +327,7 @@ pub async fn run_page(
     };
 
     let page = RUN_HTML
-        .replace("{{CSS}}", APP_CSS)
+        .replace("{{CSS}}", app_css())
         .replace("{{REFRESH}}", &refresh)
         .replace("{{TOPBAR}}", &topbar("Run", &email))
         .replace("{{TITLE}}", &esc(&pipeline_name))
