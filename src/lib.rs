@@ -1,4 +1,4 @@
-//! Anvil — CI build runner for the HOLDFAST stack.
+//! Anvil — CI build runner for the Steadholme stack.
 //!
 //! Library root: defines [`AppState`], wires the routes via [`app`], and provides
 //! [`build_dev_state`] (in-memory store, disabled audit) and [`build_state_from_env`]

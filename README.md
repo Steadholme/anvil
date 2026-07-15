@@ -5,7 +5,7 @@ a branch, and a list of shell steps); triggering it enqueues a **run**: Anvil sh
 repo, executes each step in order inside a per-run workspace, captures the combined stdout/stderr,
 exit status, and duration, then cleans the workspace.
 
-Anvil is part of the HOLDFAST estate. It lives at `ci.w33d.xyz`, sits behind the Sluice gateway, and
+Anvil is part of the Steadholme estate. It lives at `ci.w33d.xyz`, sits behind the Sluice gateway, and
 is **internal-only**.
 
 ## Security posture (read this)
