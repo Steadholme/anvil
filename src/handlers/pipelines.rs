@@ -17,7 +17,8 @@ use crate::auth;
 use crate::config::{MAX_NAME_CHARS, RUN_LIST_LIMIT};
 use crate::error::AppError;
 use crate::handlers::{
-    app_css, esc, fmt_duration, fmt_ts, html_with_cookie, redirect, status_pill, topbar,
+    app_css, esc, fmt_duration, fmt_ts, html_with_cookie, normalized_status, redirect, status_pill,
+    topbar,
 };
 use crate::runner::{parse_steps, steps_of, STATUS_QUEUED};
 use crate::store::{Pipeline, Run};
@@ -65,12 +66,18 @@ pub async fn index(State(state): State<AppState>, headers: HeaderMap) -> Respons
     let pipelines_html = render_pipelines(&pipelines, &runs, &csrf);
     let runs_html = render_runs(&runs, &pipelines);
 
-    let page = CONSOLE_HTML
-        .replace("{{CSS}}", app_css())
-        .replace("{{TOPBAR}}", &topbar("Console", &email))
-        .replace("{{CSRF}}", &esc(&csrf))
-        .replace("{{PIPELINES}}", &pipelines_html)
-        .replace("{{RUNS}}", &runs_html);
+    let topbar_html = topbar("Console", &email);
+    let csrf_html = esc(&csrf);
+    let page = render_template(
+        CONSOLE_HTML,
+        &[
+            ("{{CSS}}", app_css()),
+            ("{{TOPBAR}}", &topbar_html),
+            ("{{CSRF}}", &csrf_html),
+            ("{{PIPELINES}}", &pipelines_html),
+            ("{{RUNS}}", &runs_html),
+        ],
+    );
     html_with_cookie(page, set_cookie)
 }
 
@@ -125,24 +132,39 @@ pub async fn pipeline_page(
         .await;
 
     let badge_url = format!("/badge/{}/status.svg", pipeline.id);
-    let badge_snippet = format!("![Anvil status]({badge_url})");
     let latest = runs.first().map(|r| r.status.as_str()).unwrap_or("never");
 
-    let page = PIPELINE_HTML
-        .replace("{{CSS}}", app_css())
-        .replace("{{TOPBAR}}", &topbar("Pipeline", &email))
-        .replace("{{ID}}", &esc(&pipeline.id))
-        .replace("{{NAME}}", &esc(&pipeline.name))
-        .replace("{{REPO}}", &esc(&pipeline.repo_url))
-        .replace("{{BRANCH}}", &esc(&pipeline.branch))
-        .replace("{{CREATED}}", &esc(&fmt_ts(pipeline.created_at)))
-        .replace("{{LATEST_STATUS}}", &status_pill(latest))
-        .replace("{{STEPS}}", &render_step_details(&pipeline.steps))
-        .replace("{{DEFINITION}}", &esc(&pipeline.steps))
-        .replace("{{RUNS}}", &render_pipeline_runs(&runs))
-        .replace("{{CSRF}}", &esc(&csrf))
-        .replace("{{BADGE_URL}}", &esc(&badge_url))
-        .replace("{{BADGE_SNIPPET}}", &esc(&badge_snippet));
+    let topbar_html = topbar("Pipeline", &email);
+    let id_html = esc(&pipeline.id);
+    let name_html = esc(&pipeline.name);
+    let repo_html = esc(&pipeline.repo_url);
+    let branch_html = esc(&pipeline.branch);
+    let created_html = esc(&fmt_ts(pipeline.created_at));
+    let latest_html = status_pill(latest);
+    let steps_html = render_step_details(&pipeline.steps);
+    let definition_html = esc(&pipeline.steps);
+    let runs_html = render_pipeline_runs(&runs, &pipeline.name);
+    let csrf_html = esc(&csrf);
+    let badge_url_html = esc(&badge_url);
+    let page = render_template(
+        PIPELINE_HTML,
+        &[
+            ("{{CSS}}", app_css()),
+            ("{{TOPBAR}}", &topbar_html),
+            ("{{ID}}", &id_html),
+            ("{{NAME}}", &name_html),
+            ("{{REPO}}", &repo_html),
+            ("{{BRANCH}}", &branch_html),
+            ("{{CREATED}}", &created_html),
+            ("{{LATEST_STATUS}}", &latest_html),
+            ("{{STEPS}}", &steps_html),
+            ("{{DEFINITION}}", &definition_html),
+            ("{{RUNS}}", &runs_html),
+            ("{{CSRF}}", &csrf_html),
+            ("{{BADGE_URL}}", &badge_url_html),
+            ("{{BADGE_SNIPPET}}", &badge_url_html),
+        ],
+    );
     Ok(html_with_cookie(page, set_cookie))
 }
 
@@ -164,15 +186,26 @@ pub async fn edit_page(
         .await
         .ok_or_else(|| AppError::NotFound("no such pipeline".to_string()))?;
 
-    let page = PIPELINE_EDIT_HTML
-        .replace("{{CSS}}", app_css())
-        .replace("{{TOPBAR}}", &topbar("Edit pipeline", &email))
-        .replace("{{ID}}", &esc(&pipeline.id))
-        .replace("{{NAME}}", &esc(&pipeline.name))
-        .replace("{{REPO}}", &esc(&pipeline.repo_url))
-        .replace("{{BRANCH}}", &esc(&pipeline.branch))
-        .replace("{{STEPS}}", &esc(&pipeline.steps))
-        .replace("{{CSRF}}", &esc(&csrf));
+    let topbar_html = topbar("Edit pipeline", &email);
+    let id_html = esc(&pipeline.id);
+    let name_html = esc(&pipeline.name);
+    let repo_html = esc(&pipeline.repo_url);
+    let branch_html = esc(&pipeline.branch);
+    let steps_html = esc(&pipeline.steps);
+    let csrf_html = esc(&csrf);
+    let page = render_template(
+        PIPELINE_EDIT_HTML,
+        &[
+            ("{{CSS}}", app_css()),
+            ("{{TOPBAR}}", &topbar_html),
+            ("{{ID}}", &id_html),
+            ("{{NAME}}", &name_html),
+            ("{{REPO}}", &repo_html),
+            ("{{BRANCH}}", &branch_html),
+            ("{{STEPS}}", &steps_html),
+            ("{{CSRF}}", &csrf_html),
+        ],
+    );
     Ok(html_with_cookie(page, set_cookie))
 }
 
@@ -284,8 +317,7 @@ pub async fn status_badge(State(state): State<AppState>, Path(id): Path<String>)
 // GET /run/{id} — the run page
 // ---------------------------------------------------------------------------
 
-/// `GET /run/{id}` — the run page: live-ish log, status, duration. While the run is not terminal the
-/// page sets a short meta-refresh so the log tails without client JS.
+/// `GET /run/{id}` — one stored run snapshot: status, duration, and combined log.
 pub async fn run_page(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -304,43 +336,80 @@ pub async fn run_page(
         .map(|p| p.name.clone())
         .unwrap_or_else(|| run.pipeline_id.clone());
 
-    let is_terminal = matches!(run.status.as_str(), "success" | "failed");
-    // Auto-refresh while a run is queued/running so the log appears to tail.
-    let refresh = if is_terminal {
-        String::new()
-    } else {
-        r#"<meta http-equiv="refresh" content="3">"#.to_string()
+    let refresh_control = match run.status.as_str() {
+        "queued" | "running" => {
+            let queued_help = if run.status == "queued" {
+                "<p>Runs execute with limited concurrency. A queued run starts when a slot becomes available.</p>"
+            } else {
+                ""
+            };
+            format!(
+                r#"<div class="refresh-control">{queued_help}<p>This page is a snapshot from its last load. It does not update automatically and is not a live stream. Use Refresh now to poll the latest stored state.</p><a class="btn btn-secondary btn-sm" href="/run/{id}">Refresh now</a></div>"#,
+                id = esc(&run.id),
+            )
+        }
+        _ => String::new(),
     };
+
+    let exit = render_exit(&run.status, run.exit_code);
 
     let meta = format!(
         "Pipeline: {name} · Started {started} · Duration {dur} · Exit {exit}",
         name = esc(&pipeline_name),
         started = esc(&fmt_ts(run.started_at)),
         dur = esc(&fmt_duration(run.started_at, run.finished_at)),
-        exit = run.exit_code,
+        exit = exit,
     );
 
-    let log = if run.log.is_empty() {
-        "anvil: waiting for a runner slot…".to_string()
-    } else {
-        run.log.clone()
-    };
-
-    let page = RUN_HTML
-        .replace("{{CSS}}", app_css())
-        .replace("{{REFRESH}}", &refresh)
-        .replace("{{TOPBAR}}", &topbar("Run", &email))
-        .replace("{{TITLE}}", &esc(&pipeline_name))
-        .replace("{{RUN_ID}}", &esc(&run.id))
-        .replace("{{STATUS}}", &status_pill(&run.status))
-        .replace("{{META}}", &meta)
-        .replace("{{LOG}}", &esc(&log));
+    let topbar_html = topbar("Run", &email);
+    let title_html = esc(&pipeline_name);
+    let run_id_html = esc(&run.id);
+    let status_html = status_pill(&run.status);
+    let log_html = esc(&run.log);
+    let page = render_template(
+        RUN_HTML,
+        &[
+            ("{{CSS}}", app_css()),
+            ("{{REFRESH_CONTROL}}", &refresh_control),
+            ("{{TOPBAR}}", &topbar_html),
+            ("{{TITLE}}", &title_html),
+            ("{{RUN_ID}}", &run_id_html),
+            ("{{STATUS}}", &status_html),
+            ("{{META}}", &meta),
+            ("{{LOG}}", &log_html),
+        ],
+    );
     Ok(html_with_cookie(page, None))
 }
 
 // ---------------------------------------------------------------------------
 // Render helpers
 // ---------------------------------------------------------------------------
+
+/// Expand placeholders in the template exactly once, without reinterpreting producer content.
+fn render_template(template: &str, replacements: &[(&str, &str)]) -> String {
+    let mut rendered = String::with_capacity(template.len());
+    let mut rest = template;
+
+    while let Some(start) = rest.find("{{") {
+        rendered.push_str(&rest[..start]);
+        let token_start = &rest[start..];
+        let Some(close) = token_start.find("}}") else {
+            rendered.push_str(token_start);
+            return rendered;
+        };
+        let token_end = close + 2;
+        let token = &token_start[..token_end];
+        if let Some((_, value)) = replacements.iter().find(|(name, _)| *name == token) {
+            rendered.push_str(value);
+        } else {
+            rendered.push_str(token);
+        }
+        rest = &token_start[token_end..];
+    }
+    rendered.push_str(rest);
+    rendered
+}
 
 /// Render the pipeline list: each card shows name, repo@branch, latest status, and actions.
 fn render_pipelines(pipelines: &[Pipeline], runs: &[Run], csrf: &str) -> String {
@@ -350,13 +419,16 @@ fn render_pipelines(pipelines: &[Pipeline], runs: &[Run], csrf: &str) -> String 
     let mut out = String::new();
     for p in pipelines {
         let n_steps = steps_of(&p.steps).len();
-        let latest = status_pill(latest_status_for(&p.id, runs));
+        let latest = match latest_status_for(&p.id, runs) {
+            Some(status) => format!("Latest {}", status_pill(status)),
+            None => "Latest: no run in the recent window".to_string(),
+        };
         out.push_str(&format!(
             r#"<article class="card-pipeline">
   <div class="card-pipeline__main">
     <h3 class="card-pipeline__name"><a href="/pipeline/{id}">{name}</a></h3>
     <div class="card-pipeline__repo"><code>{repo}</code> <span class="branch">@ {branch}</span></div>
-    <div class="card-pipeline__meta"><span>{n} step{plural}</span><span>Latest {latest}</span></div>
+    <div class="card-pipeline__meta"><span>{n} step{plural}</span><span>{latest}</span></div>
   </div>
   <div class="card-pipeline__actions">
     <a class="btn btn-secondary btn-sm" href="/pipeline/{id}">Details</a>
@@ -380,11 +452,17 @@ fn render_pipelines(pipelines: &[Pipeline], runs: &[Run], csrf: &str) -> String 
     out
 }
 
-fn latest_status_for<'a>(pipeline_id: &str, runs: &'a [Run]) -> &'a str {
+fn latest_status_for<'a>(pipeline_id: &str, runs: &'a [Run]) -> Option<&'a str> {
     runs.iter()
         .find(|r| r.pipeline_id == pipeline_id)
         .map(|r| r.status.as_str())
-        .unwrap_or("never")
+}
+
+fn render_exit(status: &str, exit_code: i64) -> String {
+    match status {
+        "success" | "failed" => exit_code.to_string(),
+        _ => "—".to_string(),
+    }
 }
 
 fn render_step_details(definition: &str) -> String {
@@ -408,26 +486,28 @@ fn render_step_details(definition: &str) -> String {
     out
 }
 
-fn render_pipeline_runs(runs: &[Run]) -> String {
+fn render_pipeline_runs(runs: &[Run], pipeline_name: &str) -> String {
     if runs.is_empty() {
         return r#"<tr><td colspan="5" class="runs__empty">No runs for this pipeline yet.</td></tr>"#
             .to_string();
     }
     let mut out = String::new();
     for r in runs {
+        let accessible_name = format!("Open run {} for pipeline {}", r.id, pipeline_name);
         out.push_str(&format!(
             r#"<tr>
   <td>{pill}</td>
-  <td><a href="/run/{id}">{id}</a></td>
+  <td><a href="/run/{id}" aria-label="{accessible_name}">{id}</a></td>
   <td class="muted">{started}</td>
   <td class="muted">{dur}</td>
   <td class="muted">{exit}</td>
 </tr>"#,
             pill = status_pill(&r.status),
             id = esc(&r.id),
+            accessible_name = esc(&accessible_name),
             started = esc(&fmt_ts(r.started_at)),
             dur = esc(&fmt_duration(r.started_at, r.finished_at)),
-            exit = r.exit_code,
+            exit = render_exit(&r.status, r.exit_code),
         ));
     }
     out
@@ -445,16 +525,18 @@ fn render_runs(runs: &[Run], pipelines: &[Pipeline]) -> String {
             .find(|p| p.id == r.pipeline_id)
             .map(|p| p.name.clone())
             .unwrap_or_else(|| r.pipeline_id.clone());
+        let accessible_name = format!("Open run {} for pipeline {}", r.id, name);
         out.push_str(&format!(
             r#"<tr>
   <td>{pill}</td>
-  <td><a href="/run/{id}">{name}</a></td>
+  <td><a href="/run/{id}" aria-label="{accessible_name}">{name}</a></td>
   <td class="muted">{started}</td>
   <td class="muted">{dur}</td>
 </tr>"#,
             pill = status_pill(&r.status),
             id = esc(&r.id),
             name = esc(&name),
+            accessible_name = esc(&accessible_name),
             started = esc(&fmt_ts(r.started_at)),
             dur = esc(&fmt_duration(r.started_at, r.finished_at)),
         ));
@@ -463,6 +545,7 @@ fn render_runs(runs: &[Run], pipelines: &[Pipeline]) -> String {
 }
 
 fn badge_svg(label: &str, status: &str) -> String {
+    let status = normalized_status(status);
     let color = match status {
         "success" => "#16a34a",
         "failed" => "#dc2626",

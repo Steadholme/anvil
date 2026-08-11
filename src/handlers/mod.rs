@@ -90,25 +90,44 @@ pub fn topbar(page_title: &str, email: &str) -> String {
     )
 }
 
-/// A status pill (`queued` / `running` / `success` / `failed`) with brand status colors.
+/// A normalized status pill whose word and glyph remain distinguishable without color.
 pub fn status_pill(status: &str) -> String {
-    let cls = match status {
-        "success" => "pill pill--success",
-        "failed" => "pill pill--failed",
-        "running" => "pill pill--running",
-        _ => "pill pill--queued",
+    let state = normalized_status(status);
+    let glyph = match state {
+        "queued" => "…",
+        "running" => "»",
+        "success" => "✓",
+        "failed" => "✕",
+        "never" => "–",
+        _ => "?",
     };
-    format!(r#"<span class="{cls}">{label}</span>"#, label = esc(status))
+    format!(
+        r#"<span class="pill pill--{state}"><span class="pill__ico" aria-hidden="true">{glyph}</span><span class="sr-only">Status: </span>{state}</span>"#
+    )
 }
 
-/// Format epoch seconds as a compact UTC datetime `Mon D, YYYY HH:MM`. `0` (unset) renders `—`.
+/// Map every runtime value onto the six states the UI is allowed to claim.
+pub(crate) fn normalized_status(status: &str) -> &'static str {
+    match status {
+        "queued" => "queued",
+        "running" => "running",
+        "success" => "success",
+        "failed" => "failed",
+        "never" => "never",
+        "unknown" => "unknown",
+        _ => "unknown",
+    }
+}
+
+/// Format epoch seconds as a compact UTC datetime `Mon D, YYYY HH:MM UTC`.
+/// `0` (unset) renders `—`; an out-of-range value remains raw and is never labelled UTC.
 pub fn fmt_ts(secs: i64) -> String {
-    if secs <= 0 {
+    if secs == 0 {
         return "—".to_string();
     }
     match time::OffsetDateTime::from_unix_timestamp(secs) {
         Ok(dt) => format!(
-            "{} {}, {} {:02}:{:02}",
+            "{} {}, {} {:02}:{:02} UTC",
             month_abbr(dt.month()),
             dt.day(),
             dt.year(),
@@ -181,22 +200,23 @@ pub fn error_page(status: StatusCode, message: &str) -> String {
     let code = status.as_u16();
     let reason = status.canonical_reason().unwrap_or("Error");
     format!(
-        r#"<!DOCTYPE html>
+        r##"<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light">
 <title>{code} {reason} · Anvil</title><style>{css}</style></head>
 <body class="page-console">
+<a class="skip-link" href="#main-content">Skip to main content</a>
 {topbar}
-<main class="console">
+<main class="console" id="main-content" tabindex="-1">
   <div class="error-card">
     <div class="error-card__code">{code}</div>
     <h1 class="error-card__title">{reason}</h1>
     <p class="error-card__msg">{msg}</p>
-    <a class="btn btn-primary" href="/">Back to the console</a>
+    <a class="btn btn-secondary" href="/">Back to the console</a>
   </div>
 </main>
-</body></html>"#,
+</body></html>"##,
         css = app_css(),
         topbar = topbar("Anvil", "—"),
         code = code,

@@ -8,8 +8,9 @@
   <style>{{CSS}}</style>
 </head>
 <body class="page-console">
+<a class="skip-link" href="#main-content">Skip to main content</a>
 {{TOPBAR}}
-<main class="console">
+<main class="console" id="main-content" tabindex="-1">
   <a class="back-link" href="/">&larr; Console</a>
   <div class="pipeline-detail__head">
     <div>
@@ -43,6 +44,7 @@
       <section class="card">
         <div class="card__head"><h3>Status badge</h3><img class="badge-preview" src="{{BADGE_URL}}" alt="Status badge"></div>
         <div class="card__body">
+          <p class="hint">Internal status link. This address is available only on the private operator surface and is not an anonymous public badge.</p>
           <code>{{BADGE_SNIPPET}}</code>
         </div>
       </section>
@@ -50,15 +52,18 @@
   </div>
 
   <section class="card card--runs">
-    <div class="card__head"><h3>Runs</h3></div>
-    <table class="runs">
-      <thead>
-        <tr><th>Status</th><th>Run</th><th>Started</th><th>Duration</th><th>Exit</th></tr>
-      </thead>
-      <tbody>
-        {{RUNS}}
-      </tbody>
-    </table>
+    <div class="card__head"><h2>Runs</h2></div>
+    <div class="table-scroll" role="region" aria-label="Pipeline runs table (scrollable)" tabindex="0">
+      <table class="runs">
+        <caption>Recent-run window for this pipeline.</caption>
+        <thead>
+          <tr><th scope="col">Status</th><th scope="col">Run</th><th scope="col">Started</th><th scope="col">Duration</th><th scope="col">Exit</th></tr>
+        </thead>
+        <tbody>
+          {{RUNS}}
+        </tbody>
+      </table>
+    </div>
   </section>
 </main>
 </body>

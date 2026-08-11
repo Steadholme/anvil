@@ -8,8 +8,9 @@
   <style>{{CSS}}</style>
 </head>
 <body class="page-console">
+<a class="skip-link" href="#main-content">Skip to main content</a>
 {{TOPBAR}}
-<main class="console">
+<main class="console" id="main-content" tabindex="-1">
   <div class="console__head">
     <div>
       <h1>Build console</h1>
@@ -34,19 +35,21 @@
               <input type="text" id="name" name="name" required maxlength="200" placeholder="e.g. build-and-test">
             </div>
             <div class="field">
-              <label for="repo_url">Repository URL</label>
-              <input type="text" id="repo_url" name="repo_url" required placeholder="https://git.w33d.xyz/owner/name.git">
+              <label for="repo_url">Repository locator</label>
+              <input type="text" id="repo_url" name="repo_url" required placeholder="Paste a repository locator">
             </div>
             <div class="field">
               <label for="branch">Branch <span class="muted">(default: main)</span></label>
               <input type="text" id="branch" name="branch" placeholder="main">
             </div>
             <div class="field">
-              <label for="steps">Pipeline YAML</label>
-              <textarea id="steps" name="steps" class="editor__body" placeholder="steps:&#10;  - name: Build&#10;    run: cargo build --release&#10;  - name: Test&#10;    run: cargo test"></textarea>
+              <label for="steps">Pipeline steps</label>
+              <textarea id="steps" name="steps" class="editor__body" aria-describedby="steps-helper" placeholder="steps:&#10;  - name: Build&#10;    run: cargo build --release&#10;  - name: Test&#10;    run: cargo test"></textarea>
+              <p class="hint" id="steps-helper">Use one command per line, or the supported steps subset: one name and one run command per step, with an optional block scalar. Commands execute through the system shell inside the Anvil container. Anvil is not a sandbox.</p>
             </div>
+            <p class="alert alert--warn">Plaintext warning: the repository locator, branch, and step text are stored without secret masking. Create and update audit events record the repository locator and branch. A failed-run audit event records the pipeline identifier and exit code; an enqueue audit event records only the pipeline identifier. The durable run log records the repository locator and branch, command text, and combined command output; oversized chunks can be truncated. Every operator can read that log. Never put credentials or secrets in the repository locator or step text.</p>
             <div class="editor__actions">
-              <button class="btn btn-primary" type="submit">Create pipeline</button>
+              <button class="btn btn-secondary" type="submit">Create pipeline</button>
             </div>
           </form>
         </div>
@@ -56,14 +59,17 @@
     <section class="col">
       <h2 class="section-title">Recent runs</h2>
       <div class="card">
-        <table class="runs">
-          <thead>
-            <tr><th>Status</th><th>Pipeline</th><th>Started</th><th>Duration</th></tr>
-          </thead>
-          <tbody>
-            {{RUNS}}
-          </tbody>
-        </table>
+        <div class="table-scroll" role="region" aria-label="Recent runs table (scrollable)" tabindex="0">
+          <table class="runs">
+            <caption>Recent-run window across all pipelines. Pipeline card latest status reflects only these 50 rows.</caption>
+            <thead>
+              <tr><th scope="col">Status</th><th scope="col">Pipeline</th><th scope="col">Started</th><th scope="col">Duration</th></tr>
+            </thead>
+            <tbody>
+              {{RUNS}}
+            </tbody>
+          </table>
+        </div>
       </div>
     </section>
   </div>

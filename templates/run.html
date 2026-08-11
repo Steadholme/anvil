@@ -4,13 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  {{REFRESH}}
   <title>{{TITLE}} · Run · Anvil</title>
   <style>{{CSS}}</style>
 </head>
 <body class="page-console">
+<a class="skip-link" href="#main-content">Skip to main content</a>
 {{TOPBAR}}
-<main class="console">
+<main class="console" id="main-content" tabindex="-1">
   <a class="back-link" href="/">&larr; Console</a>
   <div class="run__head">
     <div>
@@ -19,9 +19,10 @@
       <div class="run__meta">{{META}}</div>
     </div>
   </div>
+  {{REFRESH_CONTROL}}
   <section class="card">
-    <div class="card__head"><h3>Log</h3></div>
-    <pre class="log">{{LOG}}</pre>
+    <div class="card__head"><h2>Log</h2></div>
+    <pre class="log" id="run-log" role="region" aria-label="Combined stored log for this run" tabindex="0">{{LOG}}</pre>
   </section>
 </main>
 </body>

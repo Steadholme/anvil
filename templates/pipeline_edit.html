@@ -8,8 +8,9 @@
   <style>{{CSS}}</style>
 </head>
 <body class="page-console">
+<a class="skip-link" href="#main-content">Skip to main content</a>
 {{TOPBAR}}
-<main class="console">
+<main class="console" id="main-content" tabindex="-1">
   <a class="back-link" href="/pipeline/{{ID}}">&larr; Pipeline</a>
   <div class="console__head">
     <div>
@@ -28,19 +29,21 @@
           <input type="text" id="name" name="name" required maxlength="200" value="{{NAME}}">
         </div>
         <div class="field">
-          <label for="repo_url">Repository URL</label>
-          <input type="text" id="repo_url" name="repo_url" required value="{{REPO}}">
+          <label for="repo_url">Repository locator</label>
+          <input type="text" id="repo_url" name="repo_url" required value="{{REPO}}" placeholder="Paste a repository locator">
         </div>
         <div class="field">
           <label for="branch">Branch</label>
           <input type="text" id="branch" name="branch" value="{{BRANCH}}">
         </div>
         <div class="field">
-          <label for="steps">Pipeline YAML</label>
-          <textarea id="steps" name="steps" class="editor__body">{{STEPS}}</textarea>
+          <label for="steps">Pipeline steps</label>
+          <textarea id="steps" name="steps" class="editor__body" aria-describedby="steps-helper">{{STEPS}}</textarea>
+          <p class="hint" id="steps-helper">Use one command per line, or the supported steps subset: one name and one run command per step, with an optional block scalar. Commands execute through the system shell inside the Anvil container. Anvil is not a sandbox.</p>
         </div>
+        <p class="alert alert--warn">Plaintext warning: the repository locator, branch, and step text are stored without secret masking. Create and update audit events record the repository locator and branch. A failed-run audit event records the pipeline identifier and exit code; an enqueue audit event records only the pipeline identifier. The durable run log records the repository locator and branch, command text, and combined command output; oversized chunks can be truncated. Every operator can read that log. Never put credentials or secrets in the repository locator or step text.</p>
         <div class="editor__actions">
-          <button class="btn btn-primary" type="submit">Save pipeline</button>
+          <button class="btn btn-secondary" type="submit">Save pipeline</button>
           <a class="btn btn-secondary" href="/pipeline/{{ID}}">Cancel</a>
         </div>
       </form>
