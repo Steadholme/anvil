@@ -88,3 +88,20 @@ cargo test
 ```
 
 The service boots zero-config (`cargo run`) on the in-memory store with audit disabled.
+
+## Frontend (v2, 2026-09-08)
+
+The console follows the shared Steadholme v2 system implemented from the Figma
+file `Dd5xgXIHf9QMF35J6e4X04` (Anvil, ember accent). The stylesheet served at
+`/assets/anvil-20260908.css` is `crates/odyssey`'s canonical layer concatenated
+with this repo's `static/service.css`; bump the date in
+`src/handlers/mod.rs` (`APP_CSS_PATH`) and in the tests together when the CSS
+changes, so the immutable cache entry is invalidated.
+
+Every page renders through `shell(TEMPLATE, active, theme, email)`, which fills
+`{{THEME_ATTR}}`, `{{COLOR_SCHEME}}`, `{{CSS_PATH}}`, `{{APPBAR}}` and
+`{{FOOTER}}`. The theme comes from the `__Secure-theme` cookie via
+`odyssey::resolve_theme`. The Forge Floor DOM contract is load-bearing: the
+skip link stays the first child of `<body>`, `<main>` keeps
+`id="main-content" tabindex="-1"`, and the error page keeps the exact string
+"Back to the console".
