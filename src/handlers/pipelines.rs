@@ -6,10 +6,10 @@
 //! injected `X-Auth-Subject` / `X-Auth-Email` (never a client field), and every state-changing POST
 //! is double-submit CSRF protected. Every producer-supplied string is HTML-escaped on render.
 
-use axum::extract::{Path, State};
-use axum::http::{header, HeaderMap};
+use axum::extract::{Path, Query, State};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::Form;
+use axum::{Form, Json};
 use serde::Deserialize;
 
 use crate::audit::AuditEvent;
@@ -17,8 +17,7 @@ use crate::auth;
 use crate::config::{MAX_NAME_CHARS, RUN_LIST_LIMIT};
 use crate::error::AppError;
 use crate::handlers::{
-    app_css, esc, fmt_duration, fmt_ts, html_with_cookie, normalized_status, redirect, status_pill,
-    topbar,
+    esc, fmt_duration, fmt_ts, html_with_cookie, normalized_status, redirect, shell, status_pill, theme_of,
 };
 use crate::runner::{parse_steps, steps_of, STATUS_QUEUED};
 use crate::store::{Pipeline, Run};
@@ -51,12 +50,44 @@ pub struct RunForm {
     pub csrf_token: String,
 }
 
+#[derive(Debug, Default, Deserialize)]
+pub struct PipelinePrefill {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub repo_url: String,
+    #[serde(default)]
+    pub branch: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct IntegrationPipelineQuery {
+    pub repo_url: String,
+    #[serde(default)]
+    pub branch: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct IntegrationRepositoryRun {
+    pub repo_url: String,
+    #[serde(default)]
+    pub branch: String,
+    #[serde(default)]
+    pub commit_sha: String,
+    #[serde(default)]
+    pub actor: String,
+}
+
 // ---------------------------------------------------------------------------
 // GET / — console
 // ---------------------------------------------------------------------------
 
 /// `GET /` — the operator console: pipelines, recent runs (status pills), create-pipeline form.
-pub async fn index(State(state): State<AppState>, headers: HeaderMap) -> Response {
+pub async fn index(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(prefill): Query<PipelinePrefill>,
+) -> Response {
     let email = auth::display_email(&headers);
     let (csrf, set_cookie) = auth::ensure_csrf(&headers);
 
@@ -65,20 +96,154 @@ pub async fn index(State(state): State<AppState>, headers: HeaderMap) -> Respons
 
     let pipelines_html = render_pipelines(&pipelines, &runs, &csrf);
     let runs_html = render_runs(&runs, &pipelines);
+    let summary_html = render_run_summary(&runs);
 
-    let topbar_html = topbar("Console", &email);
     let csrf_html = esc(&csrf);
     let page = render_template(
-        CONSOLE_HTML,
+        &shell(CONSOLE_HTML, "/", theme_of(&headers), Some(&email)),
         &[
-            ("{{CSS}}", app_css()),
-            ("{{TOPBAR}}", &topbar_html),
             ("{{CSRF}}", &csrf_html),
             ("{{PIPELINES}}", &pipelines_html),
             ("{{RUNS}}", &runs_html),
+            ("{{SUMMARY}}", &summary_html),
+            ("{{PREFILL_NAME}}", &esc(prefill.name.trim())),
+            ("{{PREFILL_REPO_URL}}", &esc(prefill.repo_url.trim())),
+            ("{{PREFILL_BRANCH}}", &esc(prefill.branch.trim())),
         ],
     );
     html_with_cookie(page, set_cookie)
+}
+
+fn render_run_summary(runs: &[Run]) -> String {
+    let running = runs
+        .iter()
+        .filter(|run| run.status == "running" || run.status == "queued")
+        .count();
+    let passed = runs.iter().filter(|run| run.status == "success").count();
+    let failed = runs.iter().filter(|run| run.status == "failed").count();
+    format!(
+        r#"<section class="run-summary" aria-label="Recent run status"><div><span class="run-summary__dot run-summary__dot--running"></span><span>Active</span><strong>{running}</strong></div><div><span class="run-summary__dot run-summary__dot--success"></span><span>Passed</span><strong>{passed}</strong></div><div><span class="run-summary__dot run-summary__dot--failed"></span><span>Failed</span><strong>{failed}</strong></div><div class="run-summary__scope"><span>Runs shown</span><strong>{total}</strong></div></section>"#,
+        total = runs.len()
+    )
+}
+
+/// Machine-readable pipeline projection used by SiteFlow. Exact repo + branch matching keeps one
+/// project from observing unrelated run metadata.
+pub async fn integration_pipelines(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(query): Query<IntegrationPipelineQuery>,
+) -> Result<Response, AppError> {
+    require_machine(&state, &headers)?;
+    let repo_url = query.repo_url.trim();
+    validate_repo_url(repo_url)?;
+    let branch = normalize_branch(&query.branch);
+    validate_branch(&branch)?;
+
+    let mut items = Vec::new();
+    for pipeline in state.store.list_pipelines().await {
+        if pipeline.repo_url.trim() != repo_url || pipeline.branch != branch {
+            continue;
+        }
+        let latest = state
+            .store
+            .list_pipeline_runs(&pipeline.id, 1)
+            .await
+            .into_iter()
+            .next();
+        items.push(serde_json::json!({
+            "id": pipeline.id,
+            "name": pipeline.name,
+            "repoUrl": pipeline.repo_url,
+            "branch": pipeline.branch,
+            "stepCount": steps_of(&pipeline.steps).len(),
+            "latestRun": latest.map(run_json),
+        }));
+    }
+
+    Ok(Json(serde_json::json!({ "pipelines": items })).into_response())
+}
+
+/// Trusted Loom/SiteFlow trigger: enqueue every pipeline bound to the exact repo + branch and
+/// return the created run ids immediately.
+pub async fn integration_repository_run(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(input): Json<IntegrationRepositoryRun>,
+) -> Result<Response, AppError> {
+    require_machine(&state, &headers)?;
+    let repo_url = input.repo_url.trim();
+    validate_repo_url(repo_url)?;
+    let branch = normalize_branch(&input.branch);
+    validate_branch(&branch)?;
+    let commit_sha = input.commit_sha.trim().to_ascii_lowercase();
+    if !commit_sha.is_empty()
+        && (!(7..=64).contains(&commit_sha.len())
+            || !commit_sha.chars().all(|ch| ch.is_ascii_hexdigit()))
+    {
+        return Err(AppError::InvalidRequest("invalid commit SHA".to_string()));
+    }
+    let actor = if input.actor.trim().is_empty() {
+        "siteflow".to_string()
+    } else {
+        input.actor.trim().to_string()
+    };
+
+    let mut runs = Vec::new();
+    for pipeline in state.store.list_pipelines().await {
+        if pipeline.repo_url.trim() != repo_url || pipeline.branch != branch {
+            continue;
+        }
+        let run = Run {
+            id: new_id("run"),
+            pipeline_id: pipeline.id.clone(),
+            commit_sha: commit_sha.clone(),
+            status: STATUS_QUEUED.to_string(),
+            started_at: 0,
+            finished_at: 0,
+            exit_code: 0,
+            log: String::new(),
+        };
+        state.store.create_run(&run).await?;
+        state
+            .runner
+            .enqueue(run.id.clone(), pipeline.clone(), actor.clone());
+        state.audit.emit(AuditEvent::info(
+            "anvil.run.enqueue",
+            &actor,
+            &run.id,
+            &format!("pipeline={}", pipeline.id),
+        ));
+        runs.push(run_json(run));
+    }
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(serde_json::json!({ "runs": runs })),
+    )
+        .into_response())
+}
+
+fn require_machine(state: &AppState, headers: &HeaderMap) -> Result<(), AppError> {
+    if auth::bearer_token_ok(headers, &state.config.api_token) {
+        Ok(())
+    } else {
+        Err(AppError::Unauthorized(
+            "machine bearer token required".to_string(),
+        ))
+    }
+}
+
+fn run_json(run: Run) -> serde_json::Value {
+    serde_json::json!({
+        "id": run.id,
+        "pipelineId": run.pipeline_id,
+        "commitSha": run.commit_sha,
+        "status": run.status,
+        "startedAt": run.started_at,
+        "finishedAt": run.finished_at,
+        "exitCode": run.exit_code,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -134,7 +299,6 @@ pub async fn pipeline_page(
     let badge_url = format!("/badge/{}/status.svg", pipeline.id);
     let latest = runs.first().map(|r| r.status.as_str()).unwrap_or("never");
 
-    let topbar_html = topbar("Pipeline", &email);
     let id_html = esc(&pipeline.id);
     let name_html = esc(&pipeline.name);
     let repo_html = esc(&pipeline.repo_url);
@@ -147,10 +311,8 @@ pub async fn pipeline_page(
     let csrf_html = esc(&csrf);
     let badge_url_html = esc(&badge_url);
     let page = render_template(
-        PIPELINE_HTML,
+        &shell(PIPELINE_HTML, "/", theme_of(&headers), Some(&email)),
         &[
-            ("{{CSS}}", app_css()),
-            ("{{TOPBAR}}", &topbar_html),
             ("{{ID}}", &id_html),
             ("{{NAME}}", &name_html),
             ("{{REPO}}", &repo_html),
@@ -186,7 +348,6 @@ pub async fn edit_page(
         .await
         .ok_or_else(|| AppError::NotFound("no such pipeline".to_string()))?;
 
-    let topbar_html = topbar("Edit pipeline", &email);
     let id_html = esc(&pipeline.id);
     let name_html = esc(&pipeline.name);
     let repo_html = esc(&pipeline.repo_url);
@@ -194,10 +355,8 @@ pub async fn edit_page(
     let steps_html = esc(&pipeline.steps);
     let csrf_html = esc(&csrf);
     let page = render_template(
-        PIPELINE_EDIT_HTML,
+        &shell(PIPELINE_EDIT_HTML, "/", theme_of(&headers), Some(&email)),
         &[
-            ("{{CSS}}", app_css()),
-            ("{{TOPBAR}}", &topbar_html),
             ("{{ID}}", &id_html),
             ("{{NAME}}", &name_html),
             ("{{REPO}}", &repo_html),
@@ -265,6 +424,7 @@ pub async fn run(
     let run = Run {
         id: new_id("run"),
         pipeline_id: pipeline.id.clone(),
+        commit_sha: String::new(),
         status: STATUS_QUEUED.to_string(),
         started_at: 0,
         finished_at: 0,
@@ -361,17 +521,14 @@ pub async fn run_page(
         exit = exit,
     );
 
-    let topbar_html = topbar("Run", &email);
     let title_html = esc(&pipeline_name);
     let run_id_html = esc(&run.id);
     let status_html = status_pill(&run.status);
     let log_html = esc(&run.log);
     let page = render_template(
-        RUN_HTML,
+        &shell(RUN_HTML, "/", theme_of(&headers), Some(&email)),
         &[
-            ("{{CSS}}", app_css()),
             ("{{REFRESH_CONTROL}}", &refresh_control),
-            ("{{TOPBAR}}", &topbar_html),
             ("{{TITLE}}", &title_html),
             ("{{RUN_ID}}", &run_id_html),
             ("{{STATUS}}", &status_html),

@@ -6,14 +6,43 @@
 //! so the run deterministically FAILS without any network — exercising the scheduler, the store
 //! state transitions, and the log capture end-to-end.
 
+use std::sync::Arc;
 use std::time::Duration;
 
+use anvil::audit::AuditSink;
+use anvil::config::Config;
+use anvil::runner::Runner;
+use anvil::store::{InMemoryStore, Pipeline, Store};
 use anvil::{app, build_dev_state, AppState};
 use axum::body::Body;
 use axum::http::{header, Request, StatusCode};
 use tower::ServiceExt;
 
 const CSRF: &str = "tok_csrf_for_tests";
+
+#[tokio::test]
+async fn stylesheet_is_public_and_immutable() {
+    let response = app(build_dev_state())
+        .oneshot(get("/assets/anvil-20260908.css"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers().get(header::CACHE_CONTROL).unwrap(),
+        "public, max-age=31536000, immutable"
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get(header::X_CONTENT_TYPE_OPTIONS)
+            .unwrap(),
+        "nosniff"
+    );
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert!(body.len() > 10_000);
+}
 
 #[tokio::test]
 async fn full_ci_flow_in_memory() {
@@ -26,6 +55,8 @@ async fn full_ci_flow_in_memory() {
     // --- empty console -----------------------------------------------------
     let (status, body) = call(&state, get("/")).await;
     assert_eq!(status, StatusCode::OK);
+    assert!(body.contains("/assets/anvil-20260908.css"));
+    assert!(!body.contains("<style>"));
     assert!(
         body.contains("No pipelines yet"),
         "empty pipelines placeholder"
@@ -171,9 +202,8 @@ async fn full_ci_flow_in_memory() {
     assert!(run_loc.starts_with("/run/run_"), "run redirect: {run_loc}");
 
     // --- the run reaches a terminal FAILED state (clone to a refused port) --
-    // Note: the inlined CSS contains the `.pill--failed` selector on EVERY page, so terminal state
-    // must be detected via the rendered pill element (`class="pill pill--failed"`), not a bare
-    // substring.
+    // Terminal state is detected via the rendered pill element (`class="pill pill--failed"`),
+    // not a bare substring.
     let mut terminal = false;
     for _ in 0..50 {
         let (status, body) = call(&state, get(&run_loc)).await;
@@ -228,6 +258,62 @@ async fn full_ci_flow_in_memory() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+#[tokio::test]
+async fn machine_api_matches_one_repository_and_enqueues_runs() {
+    let state = machine_state();
+    for (id, repo_url) in [
+        ("pl_match", "http://127.0.0.1:1/acme.git"),
+        ("pl_other", "http://127.0.0.1:1/other.git"),
+    ] {
+        state
+            .store
+            .create_pipeline(&Pipeline {
+                id: id.to_string(),
+                name: id.to_string(),
+                repo_url: repo_url.to_string(),
+                branch: "main".to_string(),
+                steps: "echo ok".to_string(),
+                created_at: 1,
+            })
+            .await
+            .unwrap();
+    }
+
+    let unauthorized = app(state.clone())
+        .oneshot(get("/api/integrations/pipelines?repo_url=http%3A%2F%2F127.0.0.1%3A1%2Facme.git&branch=main"))
+        .await
+        .unwrap();
+    assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+    let listing = app(state.clone())
+        .oneshot(machine_get("/api/integrations/pipelines?repo_url=http%3A%2F%2F127.0.0.1%3A1%2Facme.git&branch=main"))
+        .await
+        .unwrap();
+    assert_eq!(listing.status(), StatusCode::OK);
+    let listing_body = axum::body::to_bytes(listing.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let listing_json: serde_json::Value = serde_json::from_slice(&listing_body).unwrap();
+    assert_eq!(listing_json["pipelines"].as_array().unwrap().len(), 1);
+    assert_eq!(listing_json["pipelines"][0]["id"], "pl_match");
+
+    let trigger = app(state.clone())
+        .oneshot(machine_post(
+            "/api/integrations/repositories/runs",
+            r#"{"repo_url":"http://127.0.0.1:1/acme.git","branch":"main","commit_sha":"deadbeef","actor":"loom"}"#,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(trigger.status(), StatusCode::ACCEPTED);
+    let trigger_body = axum::body::to_bytes(trigger.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let trigger_json: serde_json::Value = serde_json::from_slice(&trigger_body).unwrap();
+    assert_eq!(trigger_json["runs"].as_array().unwrap().len(), 1);
+    assert_eq!(trigger_json["runs"][0]["pipelineId"], "pl_match");
+    assert_eq!(trigger_json["runs"][0]["commitSha"], "deadbeef");
+}
+
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
@@ -243,6 +329,42 @@ async fn call(state: &AppState, req: Request<Body>) -> (StatusCode, String) {
 
 fn get(uri: &str) -> Request<Body> {
     Request::builder().uri(uri).body(Body::empty()).unwrap()
+}
+
+fn machine_state() -> AppState {
+    let mut config = Config::dev();
+    config.api_token = "machine-token".to_string();
+    config.data_dir = std::env::temp_dir()
+        .join("anvil-machine-api-test")
+        .to_string_lossy()
+        .into_owned();
+    let store: Arc<dyn Store> = Arc::new(InMemoryStore::new());
+    let audit = AuditSink::disabled();
+    let runner = Runner::new(store.clone(), audit.clone(), &config);
+    AppState {
+        config: Arc::new(config),
+        store,
+        audit,
+        runner,
+    }
+}
+
+fn machine_get(uri: &str) -> Request<Body> {
+    Request::builder()
+        .uri(uri)
+        .header(header::AUTHORIZATION, "Bearer machine-token")
+        .body(Body::empty())
+        .unwrap()
+}
+
+fn machine_post(uri: &str, body: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header(header::AUTHORIZATION, "Bearer machine-token")
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap()
 }
 
 fn location(resp: &axum::response::Response) -> String {

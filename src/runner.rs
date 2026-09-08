@@ -23,6 +23,7 @@ use tokio::sync::Semaphore;
 
 use crate::audit::{AuditEvent, AuditSink};
 use crate::config::{Config, MAX_LOG_BYTES};
+use crate::loom_status::LoomStatusReporter;
 use crate::now_secs;
 use crate::store::{Pipeline, Store};
 
@@ -53,6 +54,7 @@ pub struct Runner {
     data_dir: String,
     git_bin: String,
     step_timeout: Duration,
+    loom_status: LoomStatusReporter,
     /// Bounds how many runs execute at once; extra runs wait here while `queued`.
     sem: Arc<Semaphore>,
 }
@@ -65,6 +67,7 @@ impl Runner {
             data_dir: config.data_dir.clone(),
             git_bin: config.git_bin.clone(),
             step_timeout: Duration::from_secs(config.step_timeout_secs),
+            loom_status: LoomStatusReporter::new(config),
             sem: Arc::new(Semaphore::new(config.max_concurrent.max(1))),
         }
     }
@@ -82,6 +85,23 @@ impl Runner {
     /// clones + runs steps, updating the store as it goes. All store errors are logged and swallowed
     /// — a run never panics the scheduler.
     async fn execute(&self, run_id: String, pipeline: Pipeline, actor: String) {
+        let initial_commit_sha = self
+            .store
+            .get_run(&run_id)
+            .await
+            .map(|run| run.commit_sha)
+            .unwrap_or_default();
+        if !initial_commit_sha.is_empty() {
+            self.report_status(
+                &pipeline.repo_url,
+                &initial_commit_sha,
+                &run_id,
+                "pending",
+                "Queued",
+            )
+            .await;
+        }
+
         // Hold a slot for the lifetime of the run; while waiting, the run stays `queued`.
         let _permit = match self.sem.clone().acquire_owned().await {
             Ok(p) => p,
@@ -95,13 +115,15 @@ impl Runner {
         self.store_running(&run_id, started).await;
 
         let workspace = PathBuf::from(&self.data_dir).join(&run_id);
-        let outcome = self.run_pipeline(&run_id, &pipeline, &workspace).await;
+        let outcome = self
+            .run_pipeline(&run_id, &pipeline, &workspace, initial_commit_sha)
+            .await;
 
         // Always clean the workspace — artifacts the operator wants must be emitted by a step to an
         // external sink; v1 does not retain the working tree.
         let _ = tokio::fs::remove_dir_all(&workspace).await;
 
-        let (status, exit_code) = outcome;
+        let (status, exit_code, commit_sha) = outcome;
         if let Err(e) = self
             .store
             .finish_run(&run_id, status, exit_code, now_secs())
@@ -119,6 +141,24 @@ impl Runner {
                 &format!("pipeline={} exit={}", pipeline.id, exit_code),
             ));
         }
+        if !commit_sha.is_empty() {
+            let (loom_state, description) = if status == STATUS_SUCCESS {
+                (
+                    "success",
+                    format!("{} steps passed", steps_of(&pipeline.steps).len()),
+                )
+            } else {
+                ("failure", format!("Failed with exit {exit_code}"))
+            };
+            self.report_status(
+                &pipeline.repo_url,
+                &commit_sha,
+                &run_id,
+                loom_state,
+                &description,
+            )
+            .await;
+        }
         tracing::info!(run = %run_id, status, exit_code, "run finished");
     }
 
@@ -129,13 +169,14 @@ impl Runner {
         run_id: &str,
         pipeline: &Pipeline,
         workspace: &Path,
-    ) -> (&'static str, i64) {
+        initial_commit_sha: String,
+    ) -> (&'static str, i64, String) {
         // Fresh workspace: remove any stale dir, then recreate the data root.
         let _ = tokio::fs::remove_dir_all(workspace).await;
         if let Err(e) = tokio::fs::create_dir_all(workspace).await {
             self.append(run_id, &format!("anvil: cannot create workspace: {e}\n"))
                 .await;
-            return (STATUS_FAILED, SPAWN_EXIT_CODE);
+            return (STATUS_FAILED, SPAWN_EXIT_CODE, initial_commit_sha);
         }
 
         // --- shallow clone --------------------------------------------------
@@ -174,8 +215,37 @@ impl Runner {
                 &format!("anvil: clone failed (exit {})\n", clone.code),
             )
             .await;
-            return (STATUS_FAILED, clone.code);
+            return (STATUS_FAILED, clone.code, initial_commit_sha);
         }
+
+        let commit_sha = if initial_commit_sha.is_empty() {
+            let resolved = self
+                .run_command(&self.git_bin, &["rev-parse", "HEAD"], Some(workspace))
+                .await;
+            let commit_sha = resolved.output.trim().to_ascii_lowercase();
+            if resolved.code == 0
+                && (7..=64).contains(&commit_sha.len())
+                && commit_sha.bytes().all(|byte| byte.is_ascii_hexdigit())
+            {
+                if let Err(error) = self.store.set_run_commit_sha(run_id, &commit_sha).await {
+                    tracing::error!(run = %run_id, error = %error, "set_run_commit_sha failed");
+                }
+                self.report_status(
+                    &pipeline.repo_url,
+                    &commit_sha,
+                    run_id,
+                    "pending",
+                    "Running",
+                )
+                .await;
+                commit_sha
+            } else {
+                tracing::warn!(run = %run_id, "could not resolve cloned commit for status callback");
+                String::new()
+            }
+        } else {
+            initial_commit_sha
+        };
 
         // --- steps ----------------------------------------------------------
         for (i, step) in parse_steps(&pipeline.steps).into_iter().enumerate() {
@@ -194,12 +264,12 @@ impl Runner {
                     &format!("anvil: step {} failed (exit {})\n", i + 1, res.code),
                 )
                 .await;
-                return (STATUS_FAILED, res.code);
+                return (STATUS_FAILED, res.code, commit_sha);
             }
         }
 
         self.append(run_id, "\nanvil: all steps succeeded\n").await;
-        (STATUS_SUCCESS, 0)
+        (STATUS_SUCCESS, 0, commit_sha)
     }
 
     /// Run one subprocess with a minimal environment + the per-step timeout. Combines stdout then
@@ -266,6 +336,25 @@ impl Runner {
         let chunk = cap_chunk(chunk);
         if let Err(e) = self.store.append_run_log(run_id, &chunk).await {
             tracing::error!(run = %run_id, error = %e, "append_run_log failed");
+        }
+    }
+
+    async fn report_status(
+        &self,
+        repo_url: &str,
+        commit_sha: &str,
+        run_id: &str,
+        state: &str,
+        description: &str,
+    ) {
+        if let Err(error) = self
+            .loom_status
+            .report(repo_url, commit_sha, run_id, state, description)
+            .await
+        {
+            if error != "repository is not hosted by Loom" {
+                tracing::warn!(run = %run_id, error = %error, "Loom status callback failed");
+            }
         }
     }
 }

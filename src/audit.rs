@@ -239,7 +239,12 @@ mod tests {
     fn disabled_sink_is_noop_and_never_drops() {
         let sink = AuditSink::disabled();
         for _ in 0..1000 {
-            sink.emit(AuditEvent::warning("anvil.run.fail", "a@b", "run_1", "exit=1"));
+            sink.emit(AuditEvent::warning(
+                "anvil.run.fail",
+                "a@b",
+                "run_1",
+                "exit=1",
+            ));
         }
         assert_eq!(sink.dropped(), 0);
     }
@@ -265,7 +270,12 @@ mod tests {
     async fn emit_never_blocks_when_sink_unreachable() {
         let sink = AuditSink::start(true, "http://127.0.0.1:1/", Some("token"));
         for _ in 0..(QUEUE_CAPACITY * 8) {
-            sink.emit(AuditEvent::warning("anvil.run.fail", "u", "run_x", "exit=1"));
+            sink.emit(AuditEvent::warning(
+                "anvil.run.fail",
+                "u",
+                "run_x",
+                "exit=1",
+            ));
         }
         assert!(
             sink.dropped() > 0,

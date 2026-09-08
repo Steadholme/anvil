@@ -28,6 +28,7 @@ pub mod auth;
 pub mod config;
 pub mod error;
 pub mod handlers;
+mod loom_status;
 pub mod runner;
 pub mod store;
 
@@ -56,12 +57,21 @@ pub struct AppState {
 pub fn app(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(handlers::health::healthz))
+        .route(handlers::APP_CSS_PATH, get(handlers::app_css_asset))
         .route("/", get(handlers::pipelines::index))
         .route("/pipeline/{id}", get(handlers::pipelines::pipeline_page))
         .route("/pipeline/{id}/edit", get(handlers::pipelines::edit_page))
         .route("/api/pipelines", post(handlers::pipelines::create))
         .route("/api/pipelines/{id}", post(handlers::pipelines::update))
         .route("/api/pipelines/{id}/run", post(handlers::pipelines::run))
+        .route(
+            "/api/integrations/pipelines",
+            get(handlers::pipelines::integration_pipelines),
+        )
+        .route(
+            "/api/integrations/repositories/runs",
+            post(handlers::pipelines::integration_repository_run),
+        )
         .route(
             "/badge/{id}/status.svg",
             get(handlers::pipelines::status_badge),

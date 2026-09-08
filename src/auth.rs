@@ -2,10 +2,10 @@
 //!
 //! Anvil does NO login of its own. It sits behind a Sluice `auth=sso` route, where the gateway
 //! runs the OIDC browser login against Keystone, STRIPS any inbound `X-Auth-*`, and injects the
-//! verified `X-Auth-Subject` / `X-Auth-Email`. Because Anvil is internal-only (never publicly
-//! reachable) and CI runs execute real shell on owned metal, only an SSO-authenticated operator
-//! may define or trigger a pipeline — the operator identity is ALWAYS taken from the gateway
-//! headers, never from a client-supplied field.
+//! verified `X-Auth-Subject` / `X-Auth-Email`. Because CI runs execute real shell on owned metal,
+//! the public gateway route remains gated by the `ci.console.enter` IAM permission: only an
+//! authorized SSO operator may define or trigger a pipeline. The operator identity is ALWAYS taken
+//! from the gateway headers, never from a client-supplied field.
 //!
 //! State-changing POSTs (create pipeline / trigger run) are double-submit CSRF protected: a random
 //! token lives in a JS-readable `__Host-csrf` cookie AND in a hidden form field; the POST is
@@ -47,6 +47,20 @@ pub fn require_operator(headers: &HeaderMap) -> Result<(String, String), AppErro
     })?;
     let email = operator_email(headers).unwrap_or_default();
     Ok((sub, email))
+}
+
+/// Validate the bearer token used by trusted internal services. An unset server token disables
+/// machine access; browser SSO/CSRF remains a separate authority path.
+pub fn bearer_token_ok(headers: &HeaderMap, expected: &str) -> bool {
+    if expected.is_empty() {
+        return false;
+    }
+    let supplied = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .unwrap_or_default();
+    ct_eq(supplied.as_bytes(), expected.as_bytes())
 }
 
 fn header_value(headers: &HeaderMap, name: &str) -> Option<String> {
@@ -185,5 +199,18 @@ mod tests {
         let (sub, email) = require_operator(&headers).unwrap();
         assert_eq!(sub, "u_123");
         assert_eq!(email, "a@steadholme.local");
+    }
+
+    #[test]
+    fn machine_bearer_token_is_fail_closed() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::AUTHORIZATION,
+            "Bearer machine-token".parse().unwrap(),
+        );
+        assert!(bearer_token_ok(&headers, "machine-token"));
+        assert!(!bearer_token_ok(&headers, "wrong"));
+        assert!(!bearer_token_ok(&headers, ""));
+        assert!(!bearer_token_ok(&HeaderMap::new(), "machine-token"));
     }
 }

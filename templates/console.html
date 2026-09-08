@@ -1,46 +1,49 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en"{{THEME_ATTR}}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light">
+  <meta name="color-scheme" content="{{COLOR_SCHEME}}">
   <title>Anvil · Steadholme CI</title>
-  <style>{{CSS}}</style>
+  <link rel="stylesheet" href="{{CSS_PATH}}">
 </head>
-<body class="page-console">
+<body class="page-v2">
 <a class="skip-link" href="#main-content">Skip to main content</a>
-{{TOPBAR}}
+{{APPBAR}}
 <main class="console" id="main-content" tabindex="-1">
+
   <div class="console__head">
     <div>
-      <h1>Build console</h1>
-      <p class="sub">Clone a repo and run declared shell steps on owned metal.</p>
+      <p class="eyebrow">Continuous integration</p>
+      <h1>Pipelines</h1>
     </div>
   </div>
 
-  <div class="anvil-grid">
+  {{SUMMARY}}
+  <div class="anvil-grid anvil-grid--console">
     <section class="col">
       <h2 class="section-title">Pipelines</h2>
       <div class="pipeline-list">
         {{PIPELINES}}
       </div>
 
-      <section class="card card--form">
+      <details class="card card--form">
+        <summary>New pipeline</summary>
         <div class="card__head"><h3>New pipeline</h3></div>
         <div class="card__body">
           <form class="editor" method="post" action="/api/pipelines">
             <input type="hidden" name="csrf_token" value="{{CSRF}}">
             <div class="field">
               <label for="name">Name</label>
-              <input type="text" id="name" name="name" required maxlength="200" placeholder="e.g. build-and-test">
+              <input type="text" id="name" name="name" required maxlength="200" value="{{PREFILL_NAME}}" placeholder="build-and-test">
             </div>
             <div class="field">
               <label for="repo_url">Repository locator</label>
-              <input type="text" id="repo_url" name="repo_url" required placeholder="Paste a repository locator">
+              <input type="text" id="repo_url" name="repo_url" required value="{{PREFILL_REPO_URL}}" placeholder="Repository URL">
             </div>
             <div class="field">
               <label for="branch">Branch <span class="muted">(default: main)</span></label>
-              <input type="text" id="branch" name="branch" placeholder="main">
+              <input type="text" id="branch" name="branch" value="{{PREFILL_BRANCH}}" placeholder="main">
             </div>
             <div class="field">
               <label for="steps">Pipeline steps</label>
@@ -53,10 +56,10 @@
             </div>
           </form>
         </div>
-      </section>
+      </details>
     </section>
 
-    <section class="col">
+    <section class="col" id="recent-runs">
       <h2 class="section-title">Recent runs</h2>
       <div class="card">
         <div class="table-scroll" role="region" aria-label="Recent runs table (scrollable)" tabindex="0">
@@ -73,6 +76,7 @@
       </div>
     </section>
   </div>
+{{FOOTER}}
 </main>
 </body>
 </html>

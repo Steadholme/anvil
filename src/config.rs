@@ -48,6 +48,16 @@ pub struct Config {
     pub step_timeout_secs: u64,
     /// Max concurrent runs (`ANVIL_MAX_CONCURRENT`).
     pub max_concurrent: usize,
+    /// Bearer token accepted by the internal SiteFlow/Loom integration API.
+    pub api_token: String,
+    /// Internal Forge/Loom HTTP endpoint used for commit-status callbacks.
+    pub loom_api_url: String,
+    /// Host header required by Forge's vhost demux.
+    pub loom_host: String,
+    /// Bearer token accepted by Loom's commit-status write API.
+    pub loom_status_token: String,
+    /// Public Anvil base URL used as the commit-status target link.
+    pub public_url: String,
 }
 
 impl Config {
@@ -59,6 +69,11 @@ impl Config {
             git_bin: DEFAULT_GIT_BIN.to_string(),
             step_timeout_secs: DEFAULT_STEP_TIMEOUT_SECS,
             max_concurrent: DEFAULT_MAX_CONCURRENT,
+            api_token: String::new(),
+            loom_api_url: String::new(),
+            loom_host: "git.w33d.xyz".to_string(),
+            loom_status_token: String::new(),
+            public_url: "https://ci.w33d.xyz".to_string(),
         }
     }
 
@@ -79,10 +94,28 @@ impl Config {
                 config.step_timeout_secs = v;
             }
         }
-        if let Some(v) = env_nonempty("ANVIL_MAX_CONCURRENT").and_then(|v| v.parse::<usize>().ok()) {
+        if let Some(v) = env_nonempty("ANVIL_MAX_CONCURRENT").and_then(|v| v.parse::<usize>().ok())
+        {
             if v > 0 {
                 config.max_concurrent = v;
             }
+        }
+        if let Some(v) = env_nonempty("ANVIL_API_TOKEN") {
+            config.api_token = v;
+        }
+        if let Some(v) = env_nonempty("ANVIL_LOOM_API_URL") {
+            config.loom_api_url = v;
+        }
+        if let Some(v) = env_nonempty("ANVIL_LOOM_HOST") {
+            config.loom_host = v;
+        }
+        if let Some(v) =
+            env_nonempty("ANVIL_LOOM_STATUS_TOKEN").or_else(|| env_nonempty("LOOM_STATUS_TOKEN"))
+        {
+            config.loom_status_token = v;
+        }
+        if let Some(v) = env_nonempty("ANVIL_PUBLIC_URL") {
+            config.public_url = v;
         }
         config
     }

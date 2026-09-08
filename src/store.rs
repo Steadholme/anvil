@@ -35,6 +35,8 @@ pub struct Pipeline {
 pub struct Run {
     pub id: String,
     pub pipeline_id: String,
+    /// Commit selected by the trigger. Empty for legacy/manual runs without a resolved SHA.
+    pub commit_sha: String,
     /// `queued` | `running` | `success` | `failed`.
     pub status: String,
     pub started_at: i64,
@@ -76,6 +78,8 @@ pub trait Store: Send + Sync {
     async fn create_run(&self, r: &Run) -> Result<(), StoreError>;
     /// Mark a run as `running` with its start time.
     async fn mark_run_running(&self, id: &str, started_at: i64) -> Result<(), StoreError>;
+    /// Persist the resolved commit after cloning a manually triggered run.
+    async fn set_run_commit_sha(&self, id: &str, commit_sha: &str) -> Result<(), StoreError>;
     /// Append a chunk to a run's combined log.
     async fn append_run_log(&self, id: &str, chunk: &str) -> Result<(), StoreError>;
     /// Set a run's terminal status (`success`/`failed`), exit code, and finish time.
@@ -207,6 +211,17 @@ impl Store for InMemoryStore {
         }
     }
 
+    async fn set_run_commit_sha(&self, id: &str, commit_sha: &str) -> Result<(), StoreError> {
+        let mut runs = self.runs.lock().expect("runs lock");
+        match runs.iter_mut().find(|r| r.id == id) {
+            Some(r) => {
+                r.commit_sha = commit_sha.to_string();
+                Ok(())
+            }
+            None => Err(StoreError::Backend(format!("no run with id {id}"))),
+        }
+    }
+
     async fn append_run_log(&self, id: &str, chunk: &str) -> Result<(), StoreError> {
         let mut runs = self.runs.lock().expect("runs lock");
         match runs.iter_mut().find(|r| r.id == id) {
@@ -292,12 +307,18 @@ impl PgStore {
             "CREATE TABLE IF NOT EXISTS runs (\
                  id TEXT PRIMARY KEY, \
                  pipeline_id TEXT NOT NULL, \
+                 commit_sha TEXT NOT NULL DEFAULT '', \
                  status TEXT NOT NULL DEFAULT 'queued', \
                  started_at BIGINT NOT NULL DEFAULT 0, \
                  finished_at BIGINT NOT NULL DEFAULT 0, \
                  exit_code BIGINT NOT NULL DEFAULT 0, \
                  log TEXT NOT NULL DEFAULT ''\
              )",
+        )
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(
+            "ALTER TABLE runs ADD COLUMN IF NOT EXISTS commit_sha TEXT NOT NULL DEFAULT ''",
         )
         .execute(&self.pool)
         .await?;
@@ -323,6 +344,7 @@ impl PgStore {
         Ok(Run {
             id: row.try_get("id")?,
             pipeline_id: row.try_get("pipeline_id")?,
+            commit_sha: row.try_get("commit_sha")?,
             status: row.try_get("status")?,
             started_at: row.try_get("started_at")?,
             finished_at: row.try_get("finished_at")?,
@@ -357,7 +379,7 @@ impl PgStore {
 
     async fn list_recent_runs_async(&self, limit: usize) -> Result<Vec<Run>, sqlx::Error> {
         let rows = sqlx::query(
-            "SELECT id, pipeline_id, status, started_at, finished_at, exit_code, log \
+            "SELECT id, pipeline_id, commit_sha, status, started_at, finished_at, exit_code, log \
              FROM runs ORDER BY started_at DESC, id DESC LIMIT $1",
         )
         .bind(limit as i64)
@@ -372,7 +394,7 @@ impl PgStore {
         limit: usize,
     ) -> Result<Vec<Run>, sqlx::Error> {
         let rows = sqlx::query(
-            "SELECT id, pipeline_id, status, started_at, finished_at, exit_code, log \
+            "SELECT id, pipeline_id, commit_sha, status, started_at, finished_at, exit_code, log \
              FROM runs WHERE pipeline_id = $1 ORDER BY started_at DESC, id DESC LIMIT $2",
         )
         .bind(pipeline_id)
@@ -384,7 +406,7 @@ impl PgStore {
 
     async fn get_run_async(&self, id: &str) -> Result<Option<Run>, sqlx::Error> {
         let row = sqlx::query(
-            "SELECT id, pipeline_id, status, started_at, finished_at, exit_code, log \
+            "SELECT id, pipeline_id, commit_sha, status, started_at, finished_at, exit_code, log \
              FROM runs WHERE id = $1",
         )
         .bind(id)
@@ -493,11 +515,12 @@ impl Store for PgStore {
     async fn create_run(&self, r: &Run) -> Result<(), StoreError> {
         let _guard = self.write_lock.lock().await;
         let result = sqlx::query(
-            "INSERT INTO runs (id, pipeline_id, status, started_at, finished_at, exit_code, log) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (id) DO NOTHING",
+            "INSERT INTO runs (id, pipeline_id, commit_sha, status, started_at, finished_at, exit_code, log) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (id) DO NOTHING",
         )
         .bind(&r.id)
         .bind(&r.pipeline_id)
+        .bind(&r.commit_sha)
         .bind(&r.status)
         .bind(r.started_at)
         .bind(r.finished_at)
@@ -516,6 +539,17 @@ impl Store for PgStore {
         let _guard = self.write_lock.lock().await;
         sqlx::query("UPDATE runs SET status = 'running', started_at = $1 WHERE id = $2")
             .bind(started_at)
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StoreError::Backend(e.to_string()))?;
+        Ok(())
+    }
+
+    async fn set_run_commit_sha(&self, id: &str, commit_sha: &str) -> Result<(), StoreError> {
+        let _guard = self.write_lock.lock().await;
+        sqlx::query("UPDATE runs SET commit_sha = $1 WHERE id = $2")
+            .bind(commit_sha)
             .bind(id)
             .execute(&self.pool)
             .await

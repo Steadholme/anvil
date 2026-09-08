@@ -1,16 +1,17 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en"{{THEME_ATTR}}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light">
+  <meta name="color-scheme" content="{{COLOR_SCHEME}}">
   <title>Edit {{NAME}} · Anvil</title>
-  <style>{{CSS}}</style>
+  <link rel="stylesheet" href="{{CSS_PATH}}">
 </head>
-<body class="page-console">
+<body class="page-v2">
 <a class="skip-link" href="#main-content">Skip to main content</a>
-{{TOPBAR}}
+{{APPBAR}}
 <main class="console" id="main-content" tabindex="-1">
+
   <a class="back-link" href="/pipeline/{{ID}}">&larr; Pipeline</a>
   <div class="console__head">
     <div>
@@ -20,7 +21,7 @@
   </div>
 
   <section class="card card--form">
-    <div class="card__head"><h3>Definition</h3></div>
+    <div class="card__head"><h2>Definition</h2></div>
     <div class="card__body">
       <form class="editor" method="post" action="/api/pipelines/{{ID}}">
         <input type="hidden" name="csrf_token" value="{{CSRF}}">
@@ -49,6 +50,7 @@
       </form>
     </div>
   </section>
+{{FOOTER}}
 </main>
 </body>
 </html>

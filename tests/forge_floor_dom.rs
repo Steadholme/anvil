@@ -264,6 +264,7 @@ async fn fixture() -> AppState {
         Run {
             id: "run_queued".to_string(),
             pipeline_id: PIPELINE_ID.to_string(),
+            commit_sha: String::new(),
             status: "queued".to_string(),
             started_at: 0,
             finished_at: 0,
@@ -273,6 +274,7 @@ async fn fixture() -> AppState {
         Run {
             id: "run_running".to_string(),
             pipeline_id: PIPELINE_ID.to_string(),
+            commit_sha: String::new(),
             status: "running".to_string(),
             started_at: 1_704_067_300,
             finished_at: 0,
@@ -282,6 +284,7 @@ async fn fixture() -> AppState {
         Run {
             id: "run_success".to_string(),
             pipeline_id: PIPELINE_ID.to_string(),
+            commit_sha: String::new(),
             status: "success".to_string(),
             started_at: 1_704_067_100,
             finished_at: 1_704_067_110,
@@ -291,6 +294,7 @@ async fn fixture() -> AppState {
         Run {
             id: "run_failed".to_string(),
             pipeline_id: PIPELINE_ID.to_string(),
+            commit_sha: String::new(),
             status: "failed".to_string(),
             started_at: 1_704_067_000,
             finished_at: 1_704_067_020,
@@ -300,6 +304,7 @@ async fn fixture() -> AppState {
         Run {
             id: "run_empty_success".to_string(),
             pipeline_id: PIPELINE_ID.to_string(),
+            commit_sha: String::new(),
             status: "success".to_string(),
             started_at: 1_704_066_900,
             finished_at: 1_704_066_901,

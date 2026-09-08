@@ -344,7 +344,8 @@ async fn long_unbroken_values_keep_required_wrapping_hooks() {
     assert!(detail.contains(&long_name));
     assert!(detail.contains(&long_locator));
     assert!(detail.contains(&long_step));
-    let compact = detail.split_whitespace().collect::<String>();
+    let css = get(&state, "/assets/anvil-20260908.css").await;
+    let compact = css.split_whitespace().collect::<String>();
     assert!(compact.contains("overflow-wrap:anywhere"));
     assert!(run.contains(&"L".repeat(4_096)));
     assert!(run.contains(r#"class="log" id="run-log""#));
@@ -427,6 +428,7 @@ async fn seed_run(
         .create_run(&Run {
             id: id.to_string(),
             pipeline_id: pipeline_id.to_string(),
+            commit_sha: String::new(),
             status: status.to_string(),
             started_at,
             finished_at: if matches!(status, "success" | "failed") {
